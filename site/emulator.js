@@ -166,14 +166,15 @@ export function parseElf(buffer) {
  * @param {object}    [opts.ext_devices={}]     External devices (see below)
  * @param {boolean}   [opts.verbose=false]      Print init info to console
  *
- * ext_devices shape:
- *   { spi_flash: [{peripheral, jedec_id, data, cs?}],
- *     i2c_eeprom: [{peripheral, address, data}],
- *     sd_card:   [{peripheral, data}],
- *     i2c_oled:   [{peripheral, address, width, height}],
- *     lcd:        [{peripheral, cs}],
- *     touchscreen:[{peripheral, touch_detected_pin, cs}],
- *     software_spi:[{name, cs, clk, miso, mosi}] }
+  * ext_devices shape:
+  *   { spi_flash: [{peripheral, jedec_id, data, cs?}],
+  *     i2c_eeprom: [{peripheral, address, data}],
+  *     sd_card:   [{peripheral, data}],
+  *     i2c_oled:   [{peripheral, address, width, height}],
+  *     lcd:        [{peripheral, cs}],
+  *     touchscreen:[{peripheral, touch_detected_pin, cs}],
+  *     software_spi:[{name, cs, clk, miso, mosi}],
+  *     fsmc_bank: [{name, data}] }
  *
  * Page-side peripheral drivers (7-seg, buzzer, ...) are pure JS: subscribe with
  * emu.onPeriphWrite(...) to tap the peripheral bus like real hardware, and poll

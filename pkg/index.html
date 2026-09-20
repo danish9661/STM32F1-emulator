@@ -151,7 +151,7 @@ runBtn.addEventListener('click', async () => {
     runBtn.disabled = false;
     stepBtn.disabled = false;
     const r = emu.getRegisters();
-    instCountEl.textContent = emu.instCount.toString();
+    instCountEl.textContent = result.instCount.toString();
     updateRegisters();
 });
 

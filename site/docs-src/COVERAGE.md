@@ -153,7 +153,7 @@ every real Blue Pill storage project uses SD.
 
 ## 5. Test coverage of the above
 
-- `tests/test_all.mjs` (736): SDIO init/R/W/IRQ/DMA/no-card/SVD (+ SDSC byte
+- `tests/test_all.mjs` (764): SDIO init/R/W/IRQ/DMA/no-card/SVD (+ SDSC byte
   addressing, CSD v1); DMA global streams + circular reload/HTIF; WWDG EWI;
   PVD PLS thresholds vs settable supply; WKUP/WUF + standby wake gating;
   RTC second/overflow + flags; RCC clock decode (SYSCLK + full-tree

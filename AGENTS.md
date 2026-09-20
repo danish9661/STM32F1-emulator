@@ -46,13 +46,13 @@ Full-system emulation of an STM32F103C8 (Bluepill) microcontroller running real 
 ## Current Status (all work below is committed; see git log)
 
 > Last updated: 2026-09-15. The emulator is **feature-complete and stable**:
-> 736 unit tests, 39/39 firmware checks, ~70M IPS headless (shared-box noise ±30%). Recent work:
+> 764 unit tests, 39/39 firmware checks, ~70M IPS headless (shared-box noise ±30%). Recent work:
 > `--help`/`--verbose` CLI + better errors, comprehensive About page, **removed all
 > `panic!` from user-input paths** (bad pin names / empty bus ranges now degrade
 > gracefully instead of aborting the WASM module), and an audit document
 > (`docs/AUDIT.md`) covering memory, security, overhead and performance.
 ### Test suite: `node tests/test_all.mjs`
-**736/736 unit tests PASS** (GPIO incl. electrical model + pin events, USART, ADC incl. RC sample-and-hold / DAC loopback / external triggers / AWD IRQ, RCC incl. clock decode, SysTick, TIM, IWDG, WWDG EWI, NVIC, CRC, SPI, I2C incl. slave/10-bit/PEC, RTC incl. second/overflow + flags, PWR incl. PVD, FLASH, CAN, DMA, AFIO, EXTI, BKP incl. tamper, DAC, TIM6, RTC Alarm, UART RX, FSMC, SDIO incl. MMC, USB FS + OTG_FS, ITM, SWD/JTAG debug, deep-sleep gating, fault escalation, HD/CL superset).
+**764/764 unit tests PASS** (GPIO incl. electrical model + pin events, USART, ADC incl. RC sample-and-hold / DAC loopback / external triggers / AWD IRQ, RCC incl. clock decode, SysTick, TIM, IWDG, WWDG EWI, NVIC, CRC, SPI, I2C incl. slave/10-bit/PEC, RTC incl. second/overflow + flags, PWR incl. PVD, FLASH, CAN, DMA, AFIO, EXTI, BKP incl. tamper, DAC, TIM6, RTC Alarm, UART RX, FSMC, SDIO incl. MMC, USB FS + OTG_FS, ITM, SWD/JTAG debug, deep-sleep gating, fault escalation, HD/CL superset).
 
 ### Firmware test — `tests/arduino_periph_test/` (24-peripheral Arduino sketch, 39 checks)
 ```
@@ -168,7 +168,7 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
 ## Next Phase — What's Left
 
 ### Immediate (ALL PASS as of this sprint; re-check after any change)
-1. **Verify nothing regressed** — rerun `tests/test_all.mjs` (736) + canary (`node tests/canary.mjs`, 39/39) after any edit to `src/` or `pkg/cli.mjs`
+1. **Verify nothing regressed** — rerun `tests/test_all.mjs` (764) + canary (`node tests/canary.mjs`, 39/39) after any edit to `src/` or `pkg/cli.mjs`
 
 ### Known issue (monitor only, mostly explained)
 - Historical `Fatal: undefined Stack: undefined` at ~35M+ instructions — **identified (2026-08-11)**: that text is cli.mjs's own catch handler format (`console.error('Fatal:', e.name, e.message)` + `'Stack:', ...`, present since the initial commit), not any wasm/glue string — no "Fatal:" exists in unicorn_arm.cjs/.js, stm32_bluepill_wasm.js or the .wasm. So the incident was a JS promise rejection with a nameless value (bare string/undefined; wasm-bindgen panics throw `new Error(msg)` with name+message, so a REAL Rust/wasm panic would have printed differently). Current handler is hardened (`e?.name || '(no name)'`, `Type:` dump) so a re-occurrence is now diagnosable. Not reproduced across ~6B stress instructions (22 runs, 2026-08-13: 3×200M + 2×500M + 1×1B periph39 cli, canary, emulator.js 200M browser path, showcase/ws2812/echo/fade/flash/timer_uart/adc_uart ELFs 100–200M — all exit 0, zero `Fatal`/`(no name)` in output); monitor only.

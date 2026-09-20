@@ -174,7 +174,19 @@ Examples:
                         const data = d.file ? readFileSync(path.resolve(config._devices_dir, d.file)) : new Uint8Array(d.size || 0);
                         add_sd_card(d.peripheral, data);
                     } else if (type === 'usart_probe') {
-                        uartAddr = parseHex(d.peripheral.match(/[0-9a-fA-F]+/)?.[0]) ? parseInt(d.peripheral, 16) : (PERIPH_ADDR[d.peripheral] || uartAddr);
+                        // Legacy config key: USART probes are log-only taps in
+                        // the model (no add_* export, no registration needed).
+                        // Accept "USART1"/"USART2"/"0x40004400" here to select
+                        // the stdin UART: hex digits parse as an address,
+                        // otherwise map known USART names.
+                        const m = String(d.peripheral || '').match(/[0-9a-fA-F]+/);
+                        const asAddr = m ? parseInt(m[0], 16) : NaN;
+                        if (Number.isFinite(asAddr) && asAddr >= 0x40000000) {
+                            uartAddr = asAddr;
+                        } else {
+                            const USART_ADDRS = { USART1: 0x40013800, USART2: 0x40004400, USART3: 0x40004800, UART4: 0x40004C00, UART5: 0x40005000 };
+                            uartAddr = USART_ADDRS[String(d.peripheral || '').toUpperCase()] || uartAddr;
+                        }
                     } else if (type === 'touchscreen') {
                         add_touchscreen(d.peripheral, d.touch_detected_pin || null, d.cs || null);
                     } else if (type === 'lcd') {

@@ -131,6 +131,16 @@ export class STM32F1 {
   onTimCapture: ((tim: number, ch: number, value: number) => void) | null;
   /** FSMC memory transaction (bank=1..7). */
   onFsmcAccess: ((bank: number, offset: number, write: boolean, size: number, value: number) => void) | null;
+  /** USB IN completion (device -> host bytes). */
+  onUsbIn: ((ep: number, data: number[]) => void) | null;
+  /** SMBus SMBA drive edge (firmware CR1 ALERT bit 13). */
+  onI2cAlert: ((channel: number, asserted: boolean) => void) | null;
+  /** OTG_FS host OUT/SETUP completion (host -> device bytes). */
+  onHostTx: ((ch: number, ep: number, setup: boolean, data: number[]) => void) | null;
+  /** OTG_FS host IN token request (feed via device -> host path). */
+  onHostRx: ((ch: number, ep: number, len: number) => void) | null;
+  /** ITM stimulus port 0 byte (firmware printf channel). */
+  onItmByte: ((port: number, byte: number) => void) | null;
 
   // ── Instance methods ──────────────────────────────────────────────────────
 

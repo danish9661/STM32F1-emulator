@@ -12,7 +12,7 @@ that runs **real, unmodified Arduino / STM32Cube firmware** in Node.js or the br
 **~70M instructions/sec** headless (`200M` in `~2.8s`, native Rust CPU + Rust peripherals in one WASM module with full MPU enforcement) and multi-MIPS in the browser demo loop. The interactive page loop stays frame-budgeted.
 
 > **Project status: complete.** The emulator is feature-complete and stable —
-> every peripheral in scope is modeled and proven (736 unit checks, 39/39
+> every peripheral in scope is modeled and proven (764 unit checks, 39/39
 > real-firmware checks, GDB + SWD/JTAG debug, 8 chip variants, live browser
 > demos). What remains intentionally unmodeled is listed under
 > [Out of scope](docs/PERIPHERALS.md#out-of-scope-by-decision-not-by-omission);
@@ -438,7 +438,7 @@ RUSTFLAGS="--remap-path-prefix=$HOME=/build" \
 wasm-pack build --target web --out-dir pkg
 
 # Run tests
-node tests/test_all.mjs              # 736 unit asserts
+node tests/test_all.mjs              # 764 unit asserts
 node tests/canary.mjs                # 39/39 firmware checks (~25s)
 node tests/test_emulator_js.mjs      # browser run-loop path (200M, 39/39)
 node tests/test_chips.mjs            # chip variants (IDCODE per chip + GD32 boot)

@@ -53,6 +53,10 @@ export interface ExtDevices {
     name: string;
     data: Uint8Array;
   }>;
+  sd_card?: Array<{
+    peripheral: string | number;
+    data?: Uint8Array;
+  }>;
 }
 
 export interface JsPeripheral {

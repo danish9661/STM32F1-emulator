@@ -204,9 +204,11 @@ impl Peripheral for Dma {
                                     self.channels[ch].do_xfer(&self.name, sys, ch);
                                     let irq = self.channel_irq(ch);
                                     let cr = self.channels[ch].cr;
-                                    let tcie = ((cr >> 4) & 1) as u8;
-                                    let htie = ((cr >> 3) & 1) as u8;
-                                    let teie = ((cr >> 2) & 1) as u8;
+                                    // RM0008 DMA_CCRx: EN=0, TCIE=1, HTIE=2,
+                                    // TEIE=3, DIR=4 (see SVD CCR1 register).
+                                    let tcie = ((cr >> 1) & 1) as u8;
+                                    let htie = ((cr >> 2) & 1) as u8;
+                                    let teie = ((cr >> 3) & 1) as u8;
                                     let flags = tcie | (htie << 1) | (teie << 2);
                                     let stream = if self.name == "DMA2" { 7 + ch } else { ch };
                                     set_dma_intr_info(stream, irq, flags);

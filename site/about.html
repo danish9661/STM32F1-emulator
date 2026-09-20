@@ -326,7 +326,7 @@ timing, interrupts and electrical behaviour, all in one WebAssembly module.</p>
 <h2>At a glance</h2>
 <div class="stat-grid">
     <div class="stat"><b>~70 MIPS</b><span>headless (200M/~2.9s)</span></div>
-    <div class="stat"><b>719/719</b><span>unit test asserts</span></div>
+    <div class="stat"><b>764/764</b><span>unit test asserts</span></div>
     <div class="stat"><b>39/39</b><span>integration checks</span></div>
     <div class="stat"><b>8</b><span>chip variants</span></div>
     <div class="stat"><b>43</b><span>browser demo presets</span></div>
@@ -713,7 +713,7 @@ The emulator has a three-tier test suite that runs in CI on every push:
 
 <h3>Unit tests &mdash; <code>node tests/test_all.mjs</code></h3>
 <div class="card">
-<p><strong>719 asserts</strong> covering every peripheral in isolation: GPIO electrical model, pin events, USART TX/RX (incl. HDSEL loopback, LIN, IrDA/smartcard registers), ADC conversion timing, RC sample-and-hold, DAC&rarr;ADC loopback, external triggers (TIM/EXTI), RCC, SysTick, all timer modes, NVIC priority dispatch, CRC, SPI (incl. TI frame format), I2C state machine (incl. slave mode, 10-bit, PEC, SMBus ALERT), RTC alarm, PWR/FLASH, CAN mailboxes + filters, DMA pump, AFIO, EXTI, BKP, DAC, TIM6, FSMC, SDIO, USB, deep-sleep gating and fault escalation, plus DMA circular mode, GPIO LCKR, AFIO SWJ pin reservation, UID, MCO/RCC clock tree, PVD levels, WKUP/standby gating, SPI NSS output, CAN silent modes, TIM dead-time, ADC discontinuous/JAUTO, SDSC cards, ITM stimulus, ESOF and the HD/CL superset (UART4/5, TIM5, ADC3, CAN2, OTG) on the builtin map.</p>
+<p><strong>764 asserts</strong> covering every peripheral in isolation: GPIO electrical model, pin events, USART TX/RX (incl. HDSEL loopback, LIN, IrDA/smartcard registers), ADC conversion timing, RC sample-and-hold, DAC&rarr;ADC loopback, external triggers (TIM/EXTI), RCC, SysTick, all timer modes, NVIC priority dispatch, CRC, SPI (incl. TI frame format), I2C state machine (incl. slave mode, 10-bit, PEC, SMBus ALERT), RTC alarm, PWR/FLASH, CAN mailboxes + filters, DMA pump, AFIO, EXTI, BKP, DAC, TIM6, FSMC, SDIO, USB, deep-sleep gating and fault escalation, plus DMA circular mode, GPIO LCKR, AFIO SWJ pin reservation, UID, MCO/RCC clock tree, PVD levels, WKUP/standby gating, SPI NSS output, CAN silent modes, TIM dead-time, ADC discontinuous/JAUTO, SDSC cards, ITM stimulus, ESOF and the HD/CL superset (UART4/5, TIM5, ADC3, CAN2, OTG) on the builtin map.</p>
 </div>
 
 <h3>Firmware integration &mdash; <code>node tests/canary.mjs</code></h3>
@@ -730,7 +730,7 @@ The emulator has a three-tier test suite that runs in CI on every push:
 <div class="card">
 <ul>
     <li><code>cargo check</code> &mdash; Rust compilation sanity</li>
-    <li><code>tests/test_all.mjs</code> &mdash; 719 unit asserts</li>
+    <li><code>tests/test_all.mjs</code> &mdash; 764 unit asserts</li>
     <li><code>tests/canary.mjs</code> &mdash; 39/39 firmware checks</li>
     <li>200M full run &mdash; <code>echo -n "AB" | node pkg/cli.mjs --config=... --max=200000000</code></li>
     <li><code>tests/test_emulator_js.mjs</code> &mdash; browser run-loop path (createEmulator + run)</li>
