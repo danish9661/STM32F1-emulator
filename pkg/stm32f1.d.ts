@@ -8,7 +8,7 @@ export type { CreateEmulatorOptions, ExtDevices, BluepillEmulator } from './emul
 // ── GPIO ────────────────────────────────────────────────────────────────────
 
 export class GPIOPin {
-  readonly port: string;  // 'A' | 'B' | 'C'
+  readonly port: string;  // 'A'..'G' (D..G on HD/CL chips)
   readonly pin: number;   // 0..15
 
   constructor(mcu: STM32F1, port: string, pin: number);
@@ -27,7 +27,7 @@ export class GPIOPin {
 
 export class GPIO {
   constructor(mcu: STM32F1);
-  /** Get a pin handle. port is 'A'|'B'|'C' or 0|1|2. */
+  /** Get a pin handle. port is 'A'..'G' or 0..6 (D..G on HD/CL chips). */
   pin(port: string | number, pin: number): GPIOPin;
 }
 
@@ -78,6 +78,31 @@ export class I2C {
   injectRx(bytes: Uint8Array | number[]): void;
 }
 
+// ── DMA ─────────────────────────────────────────────────────────────────────
+
+export class DMA {
+  readonly n: 1 | 2;  // controller number
+
+  constructor(mcu: STM32F1, n: 1 | 2);
+
+  /** Raw ISR flags word (TCIF/HTIF/TEIF/GIF per channel nibble). */
+  isr(): number;
+  /** Channel config word (CCR). */
+  getCcr(ch: number): number;
+  /** Remaining transfer count (CNDTR). */
+  getNdtr(ch: number): number;
+  /** Peripheral address (CPAR). */
+  getPar(ch: number): number;
+  /** Memory address (CMAR). */
+  getMar(ch: number): number;
+  /** Program a channel (CCR write of EN=1 queues the transfer). */
+  setChannel(ch: number, fields: { ccr?: number; ndtr?: number; par?: number; mar?: number }): void;
+  /** Clear ISR flags via IFCR (write-1-clears mask). */
+  clearFlags(mask: number): void;
+  /** True while a DMA transfer is queued anywhere in the core. */
+  pending(): boolean;
+}
+
 // ── STM32F1 (main class) ────────────────────────────────────────────────────
 
 export class STM32F1 {
@@ -106,6 +131,10 @@ export class STM32F1 {
   readonly i2c2: I2C;
   readonly i2c3: I2C;
   readonly i2c: { 1: I2C; 2: I2C; 3: I2C };
+
+  readonly dma1: DMA;
+  readonly dma2: DMA;
+  readonly dma: { 1: DMA; 2: DMA };
 
   // ── Top-level event callbacks (set directly on instance) ───────────────────
 

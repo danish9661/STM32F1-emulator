@@ -25,15 +25,15 @@ import { createEmulator, parseElf, parseIntelHex, parseSymbolMap } from './emula
 
 /** STM32F1 USART data-register addresses (a byte written here = one TX byte). */
 const USART_DR = { 1: 0x40013804, 2: 0x40004404, 3: 0x40004804 };
-/** GPIO port letter -> internal index (A=0, B=1, C=2), matching gpioReadOutput(). */
-const PORT_INDEX = { A: 0, B: 1, C: 2 };
+/** GPIO port letter -> internal index (A=0 .. G=6), matching gpioReadOutput(). */
+const PORT_INDEX = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6 };
 
 /**
  * A single GPIO pin. Subscribe to output-level changes, read the level, or drive
  * an external input (e.g. a button) into the pin.
  */
 export class GPIOPin {
-    /** @param {STM32F1} mcu @param {string} port 'A'|'B'|'C' @param {number} pin 0..15 */
+    /** @param {STM32F1} mcu @param {string} port 'A'..'G' @param {number} pin 0..15 */
     constructor(mcu, port, pin) {
         this._mcu = mcu;
         this.port = port;
@@ -153,6 +153,36 @@ export class I2C {
 }
 
 /**
+ * A DMA controller (DMA1: 7 channels, DMA2: 5 channels). Direct RM0008
+ * channel access: CCR/CNDTR/CPAR/CMAR per 1-based channel number, ISR/IFCR
+ * for completion flags. A CCR write with EN=1 queues the transfer; the
+ * run/step loop pumps it with zero JS crossings (same as firmware DMA).
+ */
+export class DMA {
+    /** @param {STM32F1} mcu @param {1|2} n controller number */
+    constructor(mcu, n) {
+        this._mcu = mcu;
+        this.n = n;
+    }
+    /** Raw ISR flags word (TCIF/HTIF/TEIF/GIF per channel nibble). */
+    isr() { return this._mcu._emu.dmaIsr(this.n); }
+    /** Channel config word (CCR). */
+    getCcr(ch) { return this._mcu._emu.dmaGetCcr(this.n, ch); }
+    /** Remaining transfer count (CNDTR). */
+    getNdtr(ch) { return this._mcu._emu.dmaGetNdtr(this.n, ch); }
+    /** Peripheral address (CPAR). */
+    getPar(ch) { return this._mcu._emu.dmaGetPar(this.n, ch); }
+    /** Memory address (CMAR). */
+    getMar(ch) { return this._mcu._emu.dmaGetMar(this.n, ch); }
+    /** Program a channel ({ ccr, ndtr, par, mar }; CCR write of EN=1 starts it). */
+    setChannel(ch, fields) { return this._mcu._emu.dmaSetChannel(this.n, ch, fields); }
+    /** Clear ISR flags via IFCR (write-1-clears mask). */
+    clearFlags(mask) { return this._mcu._emu.dmaClearFlags(this.n, mask); }
+    /** True while a DMA transfer is queued anywhere in the core. */
+    pending() { return this._mcu._emu.dmaPending(); }
+}
+
+/**
  * High-level STM32F1 emulator. Wrap it around a firmware image and drive it like
  * rp2040js / avr8js.
  */
@@ -174,6 +204,8 @@ export class STM32F1 {
         for (let ch = 1; ch <= 3; ch++) this.i2c[ch] = new I2C(this, ch);
         this.spi1 = this.spi[1]; this.spi2 = this.spi[2]; this.spi3 = this.spi[3];
         this.i2c1 = this.i2c[1]; this.i2c2 = this.i2c[2]; this.i2c3 = this.i2c[3];
+        this.dma = { 1: new DMA(this, 1), 2: new DMA(this, 2) };
+        this.dma1 = this.dma[1]; this.dma2 = this.dma[2];
         /** EXTI line edge callback: onExtiEdge(line) */
         this.onExtiEdge = null;
         /** ADC conversion-complete callback: onAdcDone(adc, chan) */

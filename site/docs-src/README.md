@@ -251,6 +251,55 @@ const oledFb = mcu._emu.i2cOledFb('I2C1', 0x3C);  // Uint8Array (page-major)
 const lcdFb  = mcu._emu.lcdFb('SPI1');              // Uint8Array (128×64, 1B/pixel)
 ```
 
+### DMA
+
+Direct RM0008 channel access — DMA1 @ `0x40020000` (7 ch) and DMA2 @
+`0x40020400` (5 ch) on every chip (builtin map and both SVDs share these
+bases, so one surface covers all 8 chip variants + F105):
+
+```js
+mcu._emu.write32(0x20001000, 0xDEADBEEF);
+mcu.dma1.setChannel(1, {
+  par: 0x20001000, mar: 0x20002000, ndtr: 8,
+  ccr: (1 << 14) | (1 << 7) | (1 << 6) | (1 << 1) | 1, // M2M+MINC+PINC+TCIE+EN
+});
+await mcu.execute(50_000);
+mcu.dma1.isr() & 0x2;   // TCIF1 set
+```
+
+| Method | Returns | Description |
+|---|---|---|
+| `mcu.dma1` / `mcu.dma2` | `DMA` | Controller wrappers (`mcu.dma[1..2]` too) |
+| `dma.isr()` | `number` | Raw ISR word (TCIF at `(N-1)*4+1`) |
+| `dma.getCcr/getNdtr/getPar/getMar(ch)` | `number` | CCR/CNDTR/CPAR/CMAR (ch 1-based) |
+| `dma.setChannel(ch, { ccr, ndtr, par, mar })` | `void` | Program a channel (EN=1 in CCR queues it) |
+| `dma.clearFlags(mask)` | `void` | IFCR write-1-clears |
+| `dma.pending()` | `boolean` | True while any transfer is queued |
+
+Low-level `emu.*` equivalents (`createEmulator` directly):
+`dmaIsr/dmaGetCcr/dmaGetNdtr/dmaGetPar/dmaGetMar/dmaSetChannel/
+dmaClearFlags/dmaPending`, plus the raw queue/IRQ surface
+`dmaQueueCount/dmaQueuePeek/dmaQueueAt/dmaPump/dmaTakeAbsorbed/
+dmaAbsorb/dmaPush/dmaComplete/dmaCompleteMany/irqPending/irqNext/
+irqReturn/irqFinish`. Full reference: `docs/STM32F1_API.md` ("DMA",
+"Clocks, power, debug helpers").
+
+### Clocks, Power, Debug Helpers
+
+Previously reachable only via raw wasm or `periphRead`/`periphWrite`,
+now first-class `emu.*` methods:
+
+```js
+const emu = mcu._emu;
+emu.rccSysclkHz();        // decoded SYSCLK, Hz
+emu.rccClocksHz();        // [sysclk, hclk, pclk1, pclk2], Hz
+emu.rccMcoHz();           // MCO pin output, Hz (0 = off)
+emu.rccFailHse();         // fail HSE (CSS: CSSF + NMI + HSI fallback)
+emu.pwrSetSupplyMv(2800); // PVD rail, mV; returns PVDO (below-threshold)
+emu.gpioSetSlew(4);       // GPIO output slew, instructions
+emu.i2cOledWrites('I2C1'); // OLED byte-write counter
+```
+
 ### Symbol Resolution
 
 ```js

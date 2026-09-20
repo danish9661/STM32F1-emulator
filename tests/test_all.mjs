@@ -682,6 +682,8 @@ for (let i = 0; i < 1000; i++) tick();
 assert_eq(has_pending_interrupt(), true, 'SysTick pending second fire');
 irq = get_next_pending_interrupt();
 assert_eq(irq, -1, 'SysTick IRQ number = -1 (second)');
+clear_current_interrupt(); // EOI: every take pairs with a return (else the
+// active-prio entry gates later takes, as the NVIC group documents)
 
 // Disable SysTick — should stop firing
 periph_write(STK + 0x00, 4, 0); // clear ENABLE
@@ -872,6 +874,8 @@ assert_eq(has_pending_interrupt(), true, 'NVIC has pending after ISPR write');
 let pirq = get_next_pending_interrupt();
 assert_eq(pirq, 37, 'NVIC pending IRQ = 37 (USART1)');
 assert_eq(has_pending_interrupt(), false, 'NVIC pending cleared after get');
+clear_current_interrupt(); // EOI before the STIR phase (else its active
+// entry gates deliverability — same HW nesting rule the ICPR block documents)
 
 // Clear enable via ICER
 periph_write(NVIC + 0x80 + 0x04, 4, 1 << 5); // ICER1 bit 5
@@ -883,9 +887,8 @@ periph_write(0xE000E325, 4, 0x80);
 let prio = periph_read(0xE000E325, 4);
 assert_eq(prio, 0x80, 'NVIC USART1 priority 0x80');
 
-// STIR (0xE000EF00, write-only): pends an IRQ by number. (Assert the ISPR
-// bit rather than delivery: the earlier get_next_pending_interrupt left an
-// active-priority entry that gates deliverability, same as HW.)
+// STIR (0xE000EF00, write-only): pends an IRQ by number (assert the ISPR
+// bit; a dispatched STIR IRQ would need its own EOI before later takes).
 periph_write(NVIC + 0x00, 4, 1 << 6); // ISER0 bit 6 = EXTI0 IRQ 6
 periph_write(0xE000EF00, 4, 6); // EXTI0 = IRQ 6
 assert_eq(periph_read(NVIC + 0x100, 4) & (1 << 6), 1 << 6, 'STIR pends EXTI0 in ISPR0');
@@ -1533,6 +1536,7 @@ assert_eq(has_pending_interrupt(), true, 'TIM2 IRQ pending after overflow');
 let tim_irq = get_next_pending_interrupt();
 assert_eq(tim_irq, 28, 'TIM2 IRQ number = 28');
 assert_eq(has_pending_interrupt(), false, 'TIM2 IRQ cleared after get');
+clear_current_interrupt(); // EOI: pair every take with a return
 
 // ============================================================
 // TIM Prescaler Test
@@ -1864,6 +1868,7 @@ assert_eq(periph_read(0x40002804, 4) & 0x01, 0, 'RTC SECF clear (SECIE off)');
 assert_eq(has_pending_interrupt(), true, 'RTC alarm IRQ pending');
 let rtc_irq = get_next_pending_interrupt();
 assert_eq(rtc_irq, 3, 'RTC alarm IRQ number = 3');
+clear_current_interrupt(); // EOI: pair every take with a return
 // Flags clear by writing 0
 periph_write(0x40002804, 4, 0);
 assert_eq(periph_read(0x40002804, 4) & 0x03, 0, 'RTC ALRF/SECF cleared by writing 0');
@@ -2145,6 +2150,26 @@ assert(rtcCnt >= 8, `RTC keeps counting in STOP (CNT=${rtcCnt})`);
 periph_write(SCB_SCR, 4, 0x0);
 for (let i = 0; i < 20; i++) tick();
 assert_eq(periph_read(TIM2S + 0x24, 4), 70, 'TIM2 resumes after wake');
+
+// IWDG keeps running through STOP while TIM freezes (LSI vs APB clock
+// domains: System::tick keeps IWDG+RTC on tick(), the rest tick_frozen).
+// Fuse: PR=0 (/4 -> 512 instr/tick), RLR=10, started + refreshed.
+reset();
+const IWDG_S = 0x40003000;
+periph_write(0x4002101C, 4, 1 << 0);            // TIM2EN
+periph_write(TIM2S + 0x28, 4, 0);               // PSC = 0
+periph_write(TIM2S + 0x2C, 4, 0xFFFF);          // ARR
+periph_write(TIM2S + 0x00, 4, 1);               // CEN
+periph_write(IWDG_S + 0x00, 4, 0x5555);         // unlock
+periph_write(IWDG_S + 0x04, 4, 0);              // PR=0 (/4)
+periph_write(IWDG_S + 0x08, 4, 10);             // RLR=10
+periph_write(IWDG_S + 0x00, 4, 0xCCCC);         // start
+periph_write(IWDG_S + 0x00, 4, 0xAAAA);         // refresh (counter=10)
+is_watchdog_reset_requested();                  // clear stale
+periph_write(SCB_SCR, 4, 0x4);                  // SLEEPDEEP (STOP)
+assert_eq(step_batch(6000), 1, 'IWDG fuse fires through STOP (watchdog stop status)');
+assert_eq(is_watchdog_reset_requested(), false, 'STOP fuse flag consumed by step_batch status');
+assert_eq(periph_read(TIM2S + 0x24, 4), 0, 'TIM2 frozen across the same STOP batch');
 
 // ============================================================
 // Fault exceptions (BusFault/HardFault escalation, SCB state)
@@ -2528,6 +2553,36 @@ periph_write(WWDG_BASE + 0x00, 4, 0xFF);
 step_batch(20000);
 assert_eq(periph_read(WWDG_BASE + 0x08, 4) & 1, 1, 'WWDG EWIF sets without EWI');
 assert_eq(has_pending_interrupt(), false, 'WWDG no IRQ without EWI enable');
+
+// Window rule: CR refresh with T > W (WDGA set, W != 0) requests reset
+// immediately (silicon: early refresh = reset). In-window, WDGA-off and
+// W=0-disabled refreshes must NOT reset.
+reset();
+periph_write(WWDG_BASE + 0x04, 4, 0x50); // CFR: W=0x50
+periph_write(WWDG_BASE + 0x00, 4, 0xFF); // CR: WDGA + T=0x7F
+is_watchdog_reset_requested(); drain_events();
+periph_write(WWDG_BASE + 0x00, 4, 0xFF); // refresh T=0x7F > W=0x50
+assert_eq(is_watchdog_reset_requested(), true, 'WWDG early refresh (T>W) requests reset');
+{ let wdog = false; for (const e of drain_events()) { if (e === 13) { wdog = true; break; } }
+  assert(wdog, 'WWDG early refresh pushes WdogReset{2}'); }
+reset();
+periph_write(WWDG_BASE + 0x04, 4, 0x50); // CFR: W=0x50
+periph_write(WWDG_BASE + 0x00, 4, 0xC0); // CR: WDGA + T=0x40 (in window)
+is_watchdog_reset_requested(); drain_events();
+periph_write(WWDG_BASE + 0x00, 4, 0xC0); // refresh T=0x40 <= W: legal
+assert_eq(is_watchdog_reset_requested(), false, 'WWDG in-window refresh does not reset');
+reset();
+periph_write(WWDG_BASE + 0x04, 4, 0x50);
+periph_write(WWDG_BASE + 0x00, 4, 0x7F); // WDGA=0: watchdog off
+is_watchdog_reset_requested();
+periph_write(WWDG_BASE + 0x00, 4, 0x7F);
+assert_eq(is_watchdog_reset_requested(), false, 'WWDG early refresh with WDGA off does not reset');
+reset();
+periph_write(WWDG_BASE + 0x04, 4, 0x00); // CFR: W=0 (window disabled)
+periph_write(WWDG_BASE + 0x00, 4, 0xFF);
+is_watchdog_reset_requested();
+periph_write(WWDG_BASE + 0x00, 4, 0xFF);
+assert_eq(is_watchdog_reset_requested(), false, 'WWDG refresh with W=0 does not reset');
 
 // ============================================================
 // PVD voltage detector (PLS thresholds vs supply -> EXTI line 16)

@@ -38,6 +38,19 @@ emu.resolveSymbol(addr);    // 'main+0x1e' style, needs symbols from ELF/map
 emu.setSymbols(list);       // [{name, addr}] from .elf or .map
 emu.getUartOutput();        // everything the firmware ever printed
 emu.uartRx(byte); emu.uartRxBytes(bytes); emu.rxPending();
+emu.dmaPending();        // true while a DMA transfer is queued (UART gate: hold bytes back while busy)
+emu.dmaIsr(1);           // DMA1 ISR flags word (TCIF/HTIF/TEIF/GIF per channel nibble)
+emu.dmaGetCcr(1, ch); emu.dmaGetNdtr(1, ch); emu.dmaGetPar(1, ch); emu.dmaGetMar(1, ch); // channel regs (ch 1-based)
+emu.dmaSetChannel(1, ch, { ccr, ndtr, par, mar }); // program a channel (CCR write of EN=1 queues it)
+emu.dmaClearFlags(1, mask); // IFCR write-1-clears
+emu.dmaQueueCount(); emu.dmaQueuePeek(); // raw queue depth + descriptors (peek CONSUMES the queue)
+emu.dmaPump();           // one manual DMA pump (normally automatic per batch)
+emu.dmaTakeAbsorbed(off, len); // periph→mem bytes from the last pump
+emu.dmaCompleteMany(bits); // signal stream completion (TC IRQs when TCIE armed)
+emu.irqPending(); emu.irqNext(); emu.irqReturn(); emu.irqFinish(irq); // raw IRQ take/return (every irqNext pairs with a return)
+emu.rccSysclkHz(); emu.rccClocksHz(); emu.rccMcoHz(); emu.rccFailHse(); // clock tree + HSE failure
+emu.pwrSetSupplyMv(mv);  // PVD rail in mV (default 3300); returns PVDO (below-threshold)
+emu.i2cOledWrites('I2C1', 0x3C); // OLED byte-write counter (display traffic probe)
 emu.canInjectMessage(addr, tir, tdtr, tdlr, tdhr);
 emu.usbInjectSetup(bytes8); emu.usbInjectOut(ep, bytes); // host -> device (SETUP/OUT); IN completions arrive as UsbIn events via drainEvents()
 emu.i2cInjectStart(ch, addr7, isRead); emu.i2cInjectWrite(ch, byte); // host addresses this MCU as an I2C slave (false = NACK when busy/unmatched/unready)

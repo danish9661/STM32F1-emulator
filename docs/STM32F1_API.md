@@ -55,6 +55,30 @@ Instance methods: `execute(cycles) -> {instCount, stopped}`, `step(cycles)` (res
 `stop()`, `close()`, `reset()`, `loadELF/loadBin/loadHex(buf)`, `uartRx(byte)`,
 `uartOutput`, `onPeriphWrite(fn)`, `setSymbols(text)`, `resolveSymbol(pc)`.
 
+## Clocks, power, debug helpers (low-level `emu.*` passthroughs)
+
+These core query/control exports were previously reachable only through raw
+wasm or `periphRead`/`periphWrite`; they are now first-class `emu.*` methods
+(delegated by the wrapper where it makes sense):
+
+```js
+const emu = mcu._emu; // or: const emu = await createEmulator({ firmware });
+emu.rccSysclkHz();      // decoded SYSCLK, Hz (follows CFGR SWS: HSI/HSE/PLL)
+emu.rccClocksHz();      // [sysclk, hclk, pclk1, pclk2], Hz
+emu.rccMcoHz();         // MCO pin output, Hz (0 = off)
+emu.rccFailHse();       // fail the HSE oscillator (CSS: CSSF + NMI + HSI fallback)
+emu.pwrSetSupplyMv(2800); // PVD rail, mV (default 3300); returns PVDO (below-threshold)
+emu.gpioSetSlew(4);     // GPIO output slew, instructions (IDR settle delay)
+emu.i2cOledWrites('I2C1'); // OLED byte-write counter (display traffic probe)
+```
+
+- Clock/power/slew probes are read-only queries (no timing rescale: 1 instr
+  = 1 cycle by decision — see `docs/PERIPHERALS.md` RCC row). `pwrSetSupplyMv`
+  drives the PVD thresholds (`pwr.rs` `PVDO` vs `PLS`); edges fan out to
+  EXTI line 16 exactly like a brownout.
+- See also the DMA section below: `emu.dmaIsr/dmaGetCcr/dmaGetNdtr/
+  dmaGetPar/dmaGetMar/dmaSetChannel/dmaClearFlags/dmaPending`.
+
 ## GPIO
 
 - `mcu.gpio.pin(port, pin)` → `GPIOPin` (`port` is `'A'`/`'B'`/`'C'` or `0`/`1`/`2`).
@@ -266,6 +290,59 @@ mcu.onItmByte = (port, byte) => ...; // stimulus port 0 printf byte
   (TCR.ITMENA) — the standard `ITM_SendChar` retarget path
   (`dwt.rs`/`itm.rs`). Encoded as flat discriminant 22 (`ItmByte`:
   `[port, byte]`). ATB/TPIU/timestamps/ports 1–31 are out of scope.
+
+## DMA — `mcu.dma1` / `mcu.dma2` (also `mcu.dma[1..2]`)
+
+Direct RM0008 channel access — no events, no callbacks: DMA moves bytes
+without CPU involvement, so the wrapper exposes registers, not a queue:
+
+```js
+// Memory-to-memory copy inside SRAM (DMA1 channel 1)
+mcu._emu.write32(0x20001000, 0xDEADBEEF);
+mcu.dma1.setChannel(1, {
+  par:  0x20001000,   // CPAR: source
+  mar:  0x20002000,   // CMAR: destination
+  ndtr: 8,            // CNDTR: byte count (PSIZE=MSIZE=8-bit here)
+  ccr:  (1 << 14)     // M2M
+     |  (1 << 7)      // MINC
+     |  (1 << 6)      // PINC
+     |  (1 << 1)      // TCIE (transfer-complete interrupt)
+     |  1,            // EN: a CCR write with EN=1 queues the transfer
+});
+await mcu.execute(50_000);            // the run/step loop pumps it (zero JS)
+console.log(mcu._emu.read32(0x20002000).toString(16)); // deadbeef
+console.log(mcu.dma1.isr() & 0x2);    // TCIF1 set
+mcu.dma1.clearFlags(0xF);             // IFCR write-1-clears the nibble
+```
+
+- `dma1` = DMA1 @ `0x40020000` (7 channels), `dma2` = DMA2 @ `0x40020400`
+  (5 channels). Channels are **1-based** (`setChannel(1, …)` = CH1).
+- `isr()` returns the raw ISR word (`GIF/TCIF/HTIF/TEIF` per channel
+  nibble: channel N flags at `(N-1)*4`, TCIF at `(N-1)*4+1`); `getCcr /
+  getNdtr / getPar / getMar` read CCR/CNDTR/CPAR/CMAR; `setChannel(ch,
+  { ccr, ndtr, par, mar })` programs any subset (program CNDTR/PAR/MAR
+  first, CCR with EN=1 last — silicon order); `clearFlags(mask)` clears
+  via IFCR; `pending()` reports a queued transfer anywhere in the core
+  (same as `emu.dmaPending()`).
+- CCR bits: `EN=0 TCIE=1 HTIE=2 TEIE=3 DIR=4 CIRC=5 PINC=6 MINC=7
+  PSIZE=8-9 MSIZE=10-11 PL=12-13 M2M=14`. `DIR=1` = memory→peripheral,
+  `DIR=0` = peripheral→memory, `M2M` = memory→memory. Interrupts follow
+  the enable bits (TCIE/HTIE-gated, edge-triggered); the low-level
+  `emu.dmaIsr/dmaGetCcr/dmaGetNdtr/dmaGetPar/dmaGetMar/dmaSetChannel/
+  dmaClearFlags` methods do the same through `createEmulator` directly.
+- Peripheral-driven DMA (USART/SPI/I2C/ADC/TIM/DAC/SDIO) needs no JS:
+  firmware programs the channel + the peripheral's DMA-enable bit and
+  the core pumps it against Rust RAM in `rustcpu_dma_pump()`.
+- Raw queue/IRQ surface (advanced — `run()`/`step()` normally own the
+  pump and dispatch; these exist for custom drivers and tests):
+  `emu.dmaQueueCount()` / `emu.dmaQueuePeek()` (flat u32s, 7 per plan —
+  **peek consumes the queue**), `emu.dmaPump()` (one manual pump),
+  `emu.dmaTakeAbsorbed(off, len)` (periph→mem bytes from the last pump),
+  `emu.dmaCompleteMany(bits)` (signal stream completion → TC IRQs when
+  TCIE is armed), `emu.irqPending()` / `emu.irqNext()` (pop next IRQ:
+  `-255` none, `-1` SysTick, `-14..-5` system) / `emu.irqReturn()` /
+  `emu.irqFinish(irq)` (EOI; every `irqNext()` pairs with a return or
+  the active-priority entry gates later takes).
 
 ## Complete worked examples
 

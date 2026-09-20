@@ -227,7 +227,7 @@ export async function createEmulator(opts = {}) {
 
     const periph = await getPeriph();
 
-    const { periph_read, periph_write, process_batch, dma_get_pending_count, is_watchdog_reset_requested,
+    const { periph_read, periph_write, process_batch, dma_get_pending_count, dma_get_all_pending, dma_get_pending, dma_pump_all, dma_take_absorbed, dma_absorb_periph, dma_push_periph, dma_set_completed, dma_set_completed_many, has_pending_interrupt, get_next_pending_interrupt, clear_current_interrupt, finish_interrupt, is_watchdog_reset_requested,
     add_spi_flash, add_i2c_eeprom, add_touchscreen, add_lcd, add_i2c_oled, add_software_spi, reset_ext_devices,
     add_fsmc_bank, fsmc_write_byte, fsmc_read_byte,
     add_sd_card,
@@ -236,7 +236,7 @@ export async function createEmulator(opts = {}) {
     gpio_set_input, gpio_read_input,
     can_inject_message, adc_set_sim_value, gpio_set_analog, adc_set_rc_tau,
     touchscreen_set_touch, pwm_duty, raise_fault,
-     i2c_oled_fb, lcd_fb, gpio_take_pin_events,     drain_events, spi_inject_miso, i2c_inject_rx, i2c_inject_start, i2c_inject_write, i2c_inject_read, i2c_inject_stop, i2c_inject_alert,     bootloader_enable, bootloader_go_addr, pwr_mode, pwr_estimate, adc_set_internal, usb_bus_reset, usb_detach, usb_inject_setup, usb_inject_out, otg_inject_setup, otg_inject_out, otg_bus_reset, otg_detach, otg_host_feed_in, otg_host_attach,
+     i2c_oled_fb, lcd_fb, gpio_take_pin_events,     drain_events, spi_inject_miso, i2c_inject_rx, i2c_inject_start, i2c_inject_write, i2c_inject_read, i2c_inject_stop, i2c_inject_alert,     bootloader_enable, bootloader_go_addr, pwr_mode, pwr_estimate, pwr_set_supply_mv, adc_set_internal, rcc_sysclk_hz, rcc_clocks_hz, rcc_mco_hz, rcc_fail_hse, gpio_set_slew, i2c_oled_writes, usb_bus_reset, usb_detach, usb_inject_setup, usb_inject_out, otg_inject_setup, otg_inject_out, otg_bus_reset, otg_detach, otg_host_feed_in, otg_host_attach,
     board_info, board_boot0, board_boot0_get, board_nrst,
     rustcpu_init, rustcpu_load, rustcpu_run, rustcpu_fault, rustcpu_fault_clear, rustcpu_dispatch,
     rustcpu_regs, rustcpu_set_pc, rustcpu_set_reg, rustcpu_mem_read, rustcpu_mem_write, rustcpu_mem_write_raw, rustcpu_dma_pump, rustcpu_i2c_hook_fired,
@@ -267,7 +267,9 @@ export async function createEmulator(opts = {}) {
         add_software_spi(d.name, d.cs ?? null, d.clk, d.miso, d.mosi);
     }
     for (const d of ext_devices.fsmc_bank || []) {
-        add_fsmc_bank(d.name, d.data);
+        // Accept { name, data } or { name, size } (blank zero-filled image).
+        const img = d.data ?? (d.size != null ? new Uint8Array(d.size) : new Uint8Array(0));
+        add_fsmc_bank(d.name, img);
     }
     for (const d of ext_devices.sd_card || []) {
         add_sd_card(d.peripheral, d.data ?? new Uint8Array(0));
@@ -673,6 +675,56 @@ export async function createEmulator(opts = {}) {
          *  UART RX test, consumes the reserved byte). */
         dmaPending() { return dma_get_pending_count() > 0; },
 
+        // ---- DMA (direct channel access, RM0008 DMA1/DMA2) ----
+        // Bases: DMA1 0x40020000 (7 channels), DMA2 0x40020400 (5 channels).
+        // Layout per channel N (1-based): CCR/CNDTR/CPAR/CMAR at
+        // base + 0x08 + (N-1)*0x14 + {0x00,0x04,0x08,0x0C}; ISR/IFCR at
+        // base + {0x00,0x04}. All helpers take a 1-based channel number.
+        /** DMA ISR flags for a controller (raw 32-bit ISR word). */
+        dmaIsr(dma = 1) { return periph_read(dma === 2 ? 0x40020400 : 0x40020000, 4) >>> 0; },
+        /** DMA channel config word (CCR). Bits: EN=0 TCIE=1 HTIE=2 TEIE=3 DIR=4 CIRC=5 PINC=6 MINC=7 PSIZE=8-9 MSIZE=10-11 PL=12-13 M2M=14. */
+        dmaGetCcr(dma, ch) { return periph_read((dma === 2 ? 0x40020400 : 0x40020000) + 0x08 + ((ch - 1) * 0x14), 4) >>> 0; },
+        /** DMA remaining transfer count (CNDTR). */
+        dmaGetNdtr(dma, ch) { return periph_read((dma === 2 ? 0x40020400 : 0x40020000) + 0x08 + ((ch - 1) * 0x14) + 4, 4) >>> 0; },
+        /** DMA peripheral address register (CPAR). */
+        dmaGetPar(dma, ch) { return periph_read((dma === 2 ? 0x40020400 : 0x40020000) + 0x08 + ((ch - 1) * 0x14) + 8, 4) >>> 0; },
+        /** DMA memory address register (CMAR). */
+        dmaGetMar(dma, ch) { return periph_read((dma === 2 ? 0x40020400 : 0x40020000) + 0x08 + ((ch - 1) * 0x14) + 12, 4) >>> 0; },
+        /** Program a DMA channel (any subset of ccr/ndtr/par/mar; CCR write of EN=1 queues the transfer). */
+        dmaSetChannel(dma, ch, { ccr, ndtr, par, mar } = {}) {
+            const base = (dma === 2 ? 0x40020400 : 0x40020000) + 0x08 + ((ch - 1) * 0x14);
+            if (ndtr !== undefined) periph_write(base + 4, 4, ndtr >>> 0);
+            if (par !== undefined) periph_write(base + 8, 4, par >>> 0);
+            if (mar !== undefined) periph_write(base + 12, 4, mar >>> 0);
+            if (ccr !== undefined) periph_write(base, 4, ccr >>> 0);
+        },
+        /** Clear DMA ISR flags via IFCR (write-1-clears per 4-bit channel nibble). */
+        dmaClearFlags(dma, mask) { periph_write((dma === 2 ? 0x40020400 : 0x40020000) + 0x04, 4, mask >>> 0); },
+        /** Raw queued-transfer count (number of DMA plans awaiting the pump). */
+        dmaQueueCount() { return dma_get_pending_count(); },
+        /** Raw queued transfer descriptor at index (flat u32s, 7 per plan). PEEK ONLY: consumes that entry. */
+        dmaQueueAt(index) { return Array.from(dma_get_pending(index >>> 0)); },
+        /** Manually run one DMA pump outside run()/step() (normally automatic per batch). */
+        dmaPump() { return Array.from(dma_pump_all()); },
+        /** Bytes absorbed by the last pump from a periph→mem leg (offset, len). */
+        dmaTakeAbsorbed(offset, len) { return new Uint8Array(dma_take_absorbed(offset >>> 0, len >>> 0)); },
+        /** Absorb `size` bytes from a peripheral register (periph→mem leg helper). */
+        dmaAbsorb(addr, size) { return new Uint8Array(dma_absorb_periph(addr >>> 0, size >>> 0)); },
+        /** Push bytes into a peripheral register (mem→periph leg helper). */
+        dmaPush(addr, bytes) { dma_push_periph(addr >>> 0, bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes)); },
+        /** Signal completion for one stream (fires its TC IRQ when TCIE armed). */
+        dmaComplete(stream) { dma_set_completed(stream >>> 0, true); },
+        /** Signal transfer completion for stream bits (fires TC IRQs when TCIE armed). */
+        dmaCompleteMany(bits) { dma_set_completed_many(bits >>> 0); },
+        /** True while any IRQ (or SysTick debt) is pending delivery. */
+        irqPending() { return has_pending_interrupt(); },
+        /** Pop the next pending IRQ number (-255 none, -1 SysTick, -14..-5 system). Pairs with irqReturn(). */
+        irqNext() { return get_next_pending_interrupt(); },
+        /** Return from a taken IRQ (clears active-priority entry + IABR bit). */
+        irqReturn() { clear_current_interrupt(); },
+        /** Return from a taken IRQ with SysTick debt drain (driver dispatch path). */
+        irqFinish(irq) { finish_interrupt(irq | 0); },
+
         /** Read a 32-bit word from emulated memory (e.g. a RAM flag). */
         memRead32(addr) {
             return read32(addr) >>> 0;
@@ -741,6 +793,20 @@ export async function createEmulator(opts = {}) {
         pwrMode() { return pwr_mode(); },
         /** Live current-draw estimate in µA (DS5319-typical, uncalibrated). */
         pwrEstimate() { return pwr_estimate(); },
+        /** Set the PVD supply rail in mV (default 3300). Returns PVDO (true = below threshold). */
+        pwrSetSupplyMv(mv) { return pwr_set_supply_mv(mv >>> 0); },
+        /** Decoded SYSCLK in Hz (follows CFGR SWS: HSI/HSE/PLL). */
+        rccSysclkHz() { return rcc_sysclk_hz() >>> 0; },
+        /** Full clock tree [sysclk, hclk, pclk1, pclk2] in Hz. */
+        rccClocksHz() { return Array.from(rcc_clocks_hz()); },
+        /** MCO pin output in Hz (0 = off). */
+        rccMcoHz() { return rcc_mco_hz() >>> 0; },
+        /** Fail the HSE oscillator (CSS: CSSF + NMI + HSI fallback when CSSON). */
+        rccFailHse() { return rcc_fail_hse(); },
+        /** GPIO output slew in instructions (IDR settles this long after a drive). */
+        gpioSetSlew(n) { gpio_set_slew(n >>> 0); },
+        /** I2C OLED byte-write counter (display traffic probe). */
+        i2cOledWrites(peripheral, address = 0x3C) { return Number(i2c_oled_writes(peripheral, address >>> 0)); },
         gpioSetAnalog(port, pin, level) { gpio_set_analog(port, pin, level); },
         adcSetRcTau(cycles) { adc_set_rc_tau(cycles); },
         setTouch(peripheral, x, y, pressure) { touchscreen_set_touch(peripheral, x, y, pressure); },

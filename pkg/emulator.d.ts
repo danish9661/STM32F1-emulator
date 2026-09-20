@@ -51,7 +51,9 @@ export interface ExtDevices {
   }>;
   fsmc_bank?: Array<{
     name: string;
-    data: Uint8Array;
+    data?: Uint8Array;
+    /** Blank-image size in bytes (alternative to data: zero-filled). */
+    size?: number;
   }>;
   sd_card?: Array<{
     peripheral: string | number;
@@ -172,6 +174,49 @@ export interface BluepillEmulator {
   /** True while a DMA transfer is queued. */
   dmaPending(): boolean;
 
+  // ── DMA (direct channel access, RM0008 DMA1 @0x40020000 / DMA2 @0x40020400) ──
+
+  /** DMA ISR flags word for controller 1|2 (default 1). */
+  dmaIsr(dma?: number): number;
+  /** DMA channel config word (CCR). */
+  dmaGetCcr(dma: number, ch: number): number;
+  /** DMA remaining transfer count (CNDTR). */
+  dmaGetNdtr(dma: number, ch: number): number;
+  /** DMA peripheral address (CPAR). */
+  dmaGetPar(dma: number, ch: number): number;
+  /** DMA memory address (CMAR). */
+  dmaGetMar(dma: number, ch: number): number;
+  /** Program a DMA channel (CCR write of EN=1 queues the transfer). */
+  dmaSetChannel(dma: number, ch: number, fields: { ccr?: number; ndtr?: number; par?: number; mar?: number }): void;
+  /** Clear DMA ISR flags via IFCR (write-1-clears mask). */
+  dmaClearFlags(dma: number, mask: number): void;
+  /** Raw queued-transfer count (number of DMA plans awaiting the pump). */
+  dmaQueueCount(): number;
+  /** Raw queued transfer descriptors (flat u32s, 7 per plan). PEEK ONLY: consumes the queue. */
+  dmaQueuePeek(): number[];
+  /** Raw queued transfer descriptor at index (flat u32s, 7 per plan). PEEK ONLY: consumes that entry. */
+  dmaQueueAt(index: number): number[];
+  /** Manually run one DMA pump outside run()/step() (normally automatic per batch). */
+  dmaPump(): number[];
+  /** Bytes absorbed by the last pump from a periph→mem leg (offset, len). */
+  dmaTakeAbsorbed(offset: number, len: number): Uint8Array;
+  /** Absorb `size` bytes from a peripheral register (periph→mem leg helper). */
+  dmaAbsorb(addr: number, size: number): Uint8Array;
+  /** Push bytes into a peripheral register (mem→periph leg helper). */
+  dmaPush(addr: number, bytes: Uint8Array | number[]): void;
+  /** Signal completion for one stream (fires its TC IRQ when TCIE armed). */
+  dmaComplete(stream: number): void;
+  /** Signal transfer completion for stream bits (fires TC IRQs when TCIE armed). */
+  dmaCompleteMany(bits: number): void;
+  /** True while any IRQ (or SysTick debt) is pending delivery. */
+  irqPending(): boolean;
+  /** Pop the next pending IRQ number (-255 none, -1 SysTick, -14..-5 system). Pairs with irqReturn(). */
+  irqNext(): number;
+  /** Return from a taken IRQ (clears active-priority entry + IABR bit). */
+  irqReturn(): void;
+  /** Return from a taken IRQ with SysTick debt drain (driver dispatch path). */
+  irqFinish(irq: number): void;
+
   // ── GPIO ──────────────────────────────────────────────────────────────────
 
   /** Read driven output level (port: 0=A, 1=B, 2=C). */
@@ -259,6 +304,20 @@ export interface BluepillEmulator {
   pwrMode(): number;
   /** Live current-draw estimate in µA (DS5319-typical, uncalibrated). */
   pwrEstimate(): number;
+  /** Set the PVD supply rail in mV (default 3300). Returns PVDO (true = below threshold). */
+  pwrSetSupplyMv(mv: number): boolean;
+  /** Decoded SYSCLK in Hz (follows CFGR SWS: HSI/HSE/PLL). */
+  rccSysclkHz(): number;
+  /** Full clock tree [sysclk, hclk, pclk1, pclk2] in Hz. */
+  rccClocksHz(): number[];
+  /** MCO pin output in Hz (0 = off). */
+  rccMcoHz(): number;
+  /** Fail the HSE oscillator (CSS: CSSF + NMI + HSI fallback when CSSON). */
+  rccFailHse(): boolean;
+  /** GPIO output slew in instructions (IDR settles this long after a drive). */
+  gpioSetSlew(n: number): void;
+  /** I2C OLED byte-write counter (display traffic probe). */
+  i2cOledWrites(peripheral: string, address?: number): number;
 
   // ── OLED / LCD framebuffers ───────────────────────────────────────────────
 
