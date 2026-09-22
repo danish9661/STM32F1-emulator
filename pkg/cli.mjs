@@ -450,6 +450,6 @@ main().catch(e => {
     if (e?.stack) console.error(`  Stack: ${e.stack.substring(0, 500)}`);
     console.error('');
     console.error('If this is a WASM crash, try re-building with: wasm-pack build --target web');
-    console.error('For bugs, report at: https://github.com/danish9661/STM32-Bluepill-emu/issues');
+    console.error('For bugs, report at: https://github.com/danish9661/STM32F1-emulator/issues');
     process.exit(1);
 });

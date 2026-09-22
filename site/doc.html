@@ -9,9 +9,9 @@
 <meta property="og:site_name" content="STM32 Bluepill Emulator">
 <meta property="og:title" content="Docs — STM32 Bluepill Emulator">
 <meta property="og:description" content="Emulator documentation rendered live from the repo sources: usage, peripherals, boards, GDB, API.">
-<meta property="og:image" content="https://danish9661.github.io/STM32-Bluepill-emu/og-image.png">
-<meta property="og:url" content="https://danish9661.github.io/STM32-Bluepill-emu/docs.html">
-<link rel="canonical" href="https://danish9661.github.io/STM32-Bluepill-emu/docs.html">
+<meta property="og:image" content="https://danish9661.github.io/STM32F1-emulator/og-image.png">
+<meta property="og:url" content="https://danish9661.github.io/STM32F1-emulator/docs.html">
+<link rel="canonical" href="https://danish9661.github.io/STM32F1-emulator/docs.html">
 <title>Docs — STM32 Bluepill Emulator</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -110,7 +110,7 @@ footer a { color: var(--cyan); }
     <a class="nav" href="index.html">Demo</a>
     <a class="nav active" href="docs.html">Docs</a>
     <a class="nav" href="about.html">About</a>
-    <a class="nav" href="https://github.com/danish9661/STM32-Bluepill-emu" target="_blank" rel="noopener">GitHub</a>
+    <a class="nav" href="https://github.com/danish9661/STM32F1-emulator" target="_blank" rel="noopener">GitHub</a>
 </header>
 <main>
 <h1 id="doc-title">Docs</h1>
@@ -119,7 +119,7 @@ footer a { color: var(--cyan); }
 </main>
 <footer>
     STM32 Bluepill Emulator &middot; <a href="docs.html">Docs</a> &middot; <a href="index.html">Live Demo</a> &middot;
-    <a href="https://github.com/danish9661/STM32-Bluepill-emu" target="_blank" rel="noopener">Source</a>
+    <a href="https://github.com/danish9661/STM32F1-emulator" target="_blank" rel="noopener">Source</a>
 </footer>
 <script type="module">
 const params = new URLSearchParams(location.search);
@@ -235,7 +235,7 @@ try {
     document.title = title + ' — STM32 Bluepill Emulator Docs';
     // Per-variant discovery tags (Google executes JS): canonical + OG +
     // TechArticle schema so each ?f= doc is indexed on its own URL.
-    const pageUrl = 'https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=' + file;
+    const pageUrl = 'https://danish9661.github.io/STM32F1-emulator/doc.html?f=' + file;
     const setMeta = (attr, key, val) => {
         let el = document.head.querySelector(`meta[${attr}="${key}"]`);
         if (!el) { el = document.createElement('meta'); el.setAttribute(attr, key); document.head.appendChild(el); }
@@ -256,7 +256,7 @@ try {
     document.getElementById('doc-title').textContent = title;
     document.getElementById('crumb').textContent = 'Docs · ' + title;
     document.getElementById('doc-src').innerHTML =
-        `Rendered live from <a href="https://github.com/danish9661/STM32-Bluepill-emu/blob/master/${file.startsWith('README') || file.startsWith('CHANGELOG') ? '' : 'docs/'}${file}">${file}</a>`;
+        `Rendered live from <a href="https://github.com/danish9661/STM32F1-emulator/blob/master/${file.startsWith('README') || file.startsWith('CHANGELOG') ? '' : 'docs/'}${file}">${file}</a>`;
     body.innerHTML = (tocs.length >= 3
         ? `<div class="toc"><b>On this page</b><ul>${tocs.map(([id, t]) => `<li><a href="#${id}">${inline(t)}</a></li>`).join('')}</ul></div>`
         : '') + bodyHtml;

@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/stm32f1-emu.svg?color=cb3837)](https://www.npmjs.com/package/stm32f1-emu)
 [![npm downloads](https://img.shields.io/npm/dm/stm32f1-emu.svg)](https://www.npmjs.com/package/stm32f1-emu)
-[![Live Demo](https://img.shields.io/badge/live%20demo-github%20pages-38bdf8)](https://danish9661.github.io/STM32-Bluepill-emu/)
+[![Live Demo](https://img.shields.io/badge/live%20demo-github%20pages-38bdf8)](https://danish9661.github.io/STM32F1-emulator/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 A full-system emulator for the **STM32F1 family** (STM32F103C8 "Blue Pill",
@@ -20,15 +20,15 @@ that runs **real, unmodified Arduino / STM32Cube firmware** in Node.js or the br
 
 ## Screenshots
 
-Click any screenshot for the full gallery (live demo: https://danish9661.github.io/STM32-Bluepill-emu/).
+Click any screenshot for the full gallery (live demo: https://danish9661.github.io/STM32F1-emulator/).
 
 | Showcase (~73M IPS) | 39/39 firmware checks |
 |---|---|
-| [![Peripheral showcase running in the browser](https://danish9661.github.io/STM32-Bluepill-emu/img/shot-showcase-sm.png)](https://danish9661.github.io/STM32-Bluepill-emu/docs.html#screenshots) | [![39 of 39 firmware checks passing](https://danish9661.github.io/STM32-Bluepill-emu/img/shot-periph37-sm.png)](https://danish9661.github.io/STM32-Bluepill-emu/docs.html#screenshots) |
+| [![Peripheral showcase running in the browser](https://danish9661.github.io/STM32F1-emulator/img/shot-showcase-sm.png)](https://danish9661.github.io/STM32F1-emulator/docs.html#screenshots) | [![39 of 39 firmware checks passing](https://danish9661.github.io/STM32F1-emulator/img/shot-periph37-sm.png)](https://danish9661.github.io/STM32F1-emulator/docs.html#screenshots) |
 
 | Showcase widgets |
 |---|
-| [![OLED, LCD, 7-segment, RGB and GPIO grid live](https://danish9661.github.io/STM32-Bluepill-emu/img/shot-showcase-widgets-sm.png)](https://danish9661.github.io/STM32-Bluepill-emu/docs.html#screenshots) |
+| [![OLED, LCD, 7-segment, RGB and GPIO grid live](https://danish9661.github.io/STM32F1-emulator/img/shot-showcase-widgets-sm.png)](https://danish9661.github.io/STM32F1-emulator/docs.html#screenshots) |
 
 ---
 
@@ -421,7 +421,7 @@ const emu = await createEmulator({
 npx stm32f1-emu firmware.bin [max_instructions]
 
 # Run with config (YAML)
-npx bluepill-emu --config=config.yaml
+npx stm32f1-emu --config=config.yaml
 
 # Options
 --regs              # Dump CPU registers at exit

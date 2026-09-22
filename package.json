@@ -63,12 +63,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danish9661/STM32-Bluepill-emu.git"
+    "url": "git+https://github.com/danish9661/STM32F1-emulator.git"
   },
   "bugs": {
-    "url": "https://github.com/danish9661/STM32-Bluepill-emu/issues"
+    "url": "https://github.com/danish9661/STM32F1-emulator/issues"
   },
-  "homepage": "https://github.com/danish9661/STM32-Bluepill-emu#readme",
+  "homepage": "https://github.com/danish9661/STM32F1-emulator#readme",
   "engines": {
     "node": ">=18"
   },

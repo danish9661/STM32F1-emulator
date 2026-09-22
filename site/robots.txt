@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://danish9661.github.io/STM32-Bluepill-emu/sitemap.xml
+Sitemap: https://danish9661.github.io/STM32F1-emulator/sitemap.xml

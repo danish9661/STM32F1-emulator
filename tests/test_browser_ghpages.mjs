@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 // Live-deployment tests against GitHub Pages (NOT localhost): validates what
 // is actually deployed, including COOP/COEP-less SAB fallback + worker boot.
-const BASE = 'https://danish9661.github.io/STM32-Bluepill-emu';
+const BASE = 'https://danish9661.github.io/STM32F1-emulator';
 
 test('gh-pages: echo preset UART round-trip (headed)', async ({ page }) => {
   page.on('console', m => { if (m.type() === 'error') console.log('BROWSER ERR:', m.text().slice(0,150)); });

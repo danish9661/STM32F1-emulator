@@ -1,4 +1,4 @@
-# Handover — STM32 Bluepill WASM Emulator (`danish9661/STM32-Bluepill-emu`)
+# Handover — STM32 Bluepill WASM Emulator (`danish9661/STM32F1-emulator`)
 
 > Read this file first, then `AGENTS.md`. This file is the session handover:
 > repo state, what just landed, what is left, and the exact todo list to load.

@@ -1,151 +1,151 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/about.html</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/about.html</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/docs.html</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/docs.html</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/ws-viewer.html</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/ws-viewer.html</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=README.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=README.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=USAGE.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=USAGE.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=PERIPHERALS.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=PERIPHERALS.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=BOARDS.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=BOARDS.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=blue-pill.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=blue-pill.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=gd32f103c8.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=gd32f103c8.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=maple-mini.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=maple-mini.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=nucleo-f103rb.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=nucleo-f103rb.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=f103rc.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=f103rc.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=f105.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=f105.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=GDB.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=GDB.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=STM32F1_API.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=STM32F1_API.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=COVERAGE.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=COVERAGE.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=CPU.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=CPU.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=ARCHITECTURE.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=ARCHITECTURE.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=WEBSOCKET_BRIDGE.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=WEBSOCKET_BRIDGE.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=AUDIT.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=AUDIT.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=NEXT_PHASE.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=NEXT_PHASE.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=PATH_B.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=PATH_B.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=summary.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=summary.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://danish9661.github.io/STM32-Bluepill-emu/doc.html?f=CHANGELOG.md</loc>
+    <loc>https://danish9661.github.io/STM32F1-emulator/doc.html?f=CHANGELOG.md</loc>
     <lastmod>2026-09-11</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>

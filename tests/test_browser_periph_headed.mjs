@@ -3,7 +3,7 @@
 // SUMMARY. TARGET=local runs against localhost:8765, default is live Pages.
 import { test, expect } from '@playwright/test';
 const TARGETS = {
-  live: 'https://danish9661.github.io/STM32-Bluepill-emu',
+  live: 'https://danish9661.github.io/STM32F1-emulator',
   local: 'http://localhost:8765',
 };
 const which = process.env.TARGET === 'local' ? 'local' : 'live';
