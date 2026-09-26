@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.2.0] — 2026-09-26 — DMA + clocks/power/debug JS surface, watchdog proofs, repo rename
+
+### Added
+- DMA channel surface (`pkg/emulator.js` + `pkg/stm32f1.js` `DMA` class):
+  `dmaIsr/dmaGetCcr/dmaGetNdtr/dmaGetPar/dmaGetMar/dmaSetChannel/
+  dmaClearFlags/dmaPending` (1-based channels, DMA1@0x40020000 7ch /
+  DMA2@0x40020400 5ch — shared by the builtin map and both SVDs, so all
+  8 chip variants + F105 work); raw queue/IRQ surface (`dmaQueueCount/
+  dmaQueuePeek/dmaQueueAt/dmaPump/dmaTakeAbsorbed/dmaAbsorb/dmaPush/
+  dmaComplete/dmaCompleteMany/irqPending/irqNext/irqReturn/irqFinish`);
+  `mcu.dma1/dma2` (`mcu.dma[1..2]`) wrappers. Full reference in
+  `docs/STM32F1_API.md` ("DMA", "Clocks, power, debug helpers"),
+  `docs/USAGE.md` method list, README "DMA" section.
+- Clocks/power/debug passthroughs (previously raw-wasm-only):
+  `rccSysclkHz/rccClocksHz/rccMcoHz/rccFailHse/pwrSetSupplyMv/
+  gpioSetSlew/i2cOledWrites` (+ `.d.ts`); GPIO wrapper ports D–G
+  (HD/CL chips); `fsmc_bank` accepts `{ name, size }` blank images;
+  `Emulator.d.ts`/`stm32f1.d.ts` cover all new methods (incl. the
+  previously missing `sd_card`/`onUsbIn`/`onItmByte` types).
+
+### Fixed
+- DMA CCR IRQ bits decoded from 4/3/2 — correct per RM0008/SVD is
+  1/2/3 (`TCIE`/`HTIE`/`TEIE`); the old code fired DMA IRQs on `DIR=1`
+  and missed real `TCIE`.
+- `usart_probe` config branch referenced undefined `PERIPH_ADDR`
+  (`ReferenceError` on any config using it) — replaced with a
+  USART-name/address map (`cli.mjs` + `bench_merged.mjs`).
+
+### Tests
+- `tests/test_all.mjs` 772/772: IWDG deep-sleep proof (fuse fires
+  through STOP while TIM2 stays frozen), WWDG window rule (early
+  refresh `T>W` requests reset + in-window/WDGA-off/`W=0` negatives),
+  NVIC EOI pairings (every raw take now returns).
+- Census 16-bit 0 gaps / 32-bit gate exit 0; fuzz seeds 1+4 × 200
+  cases, 0 divergences.
+
+### Changed
+- Repo renamed `STM32-Bluepill-emu` → `STM32F1-emulator`
+  (`github.com/danish9661/STM32F1-emulator`): all tracked references
+  updated (package metadata, README badges/demo links, site webui
+  meta/nav/footer, sitemap, CLI bug-report URL, gh-pages tests).
+  `bluepill-emu` CLI alias kept; `npx` examples now use `stm32f1-emu`.
+
 ## [3.1.0] — 2026-09-12 — F105 USB OTG_FS device/host mode + Maple DFU bootloader + SWD/JTAG debug slice
 
 ### Added
