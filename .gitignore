@@ -74,3 +74,6 @@ test-results/
 tests/arduino_coremark/build/
 __pycache__/
 tests/otg_cdc/build/
+# Third-party reference material (never tracked): Bramble RP2040/RP2350
+# emulator docs kept locally for cross-project comparison only.
+ignore/

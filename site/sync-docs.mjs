@@ -25,6 +25,7 @@ const DOCS = [
   ['docs/boards/f105.md', 'Board: STM32F105', 'CAN2 + OTG notes, SVD map'],
   ['docs/GDB.md', 'Debugging with GDB', 'RSP stub walkthrough, fidelity notes'],
   ['docs/STM32F1_API.md', 'JavaScript API', 'STM32F1 wrapper, events, injection'],
+  ['docs/STM32F1_Guide.md', 'User Guide (full manual)', 'Architecture to API: the whole emulator in one document'],
   ['docs/COVERAGE.md', 'Coverage audit', 'SVD census, depth gaps, test counts'],
   ['docs/CPU.md', 'CPU core', 'Decoder, memory protection, exceptions, banks'],
   ['docs/ARCHITECTURE.md', 'Architecture', 'Emulation loop, batching, performance'],

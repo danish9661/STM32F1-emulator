@@ -4,52 +4,42 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STM32F1 WebSocket Viewer</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font:13px/1.5 'SF Mono',Monaco,Consolas,monospace;background:#0d1117;color:#c9d1d9;padding:16px}
-h1{font-size:16px;color:#58a6ff;margin-bottom:8px}
-.hdr{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.hdr .dot{width:10px;height:10px;border-radius:50%;background:#f85149;display:inline-block}
-.hdr .dot.on{background:#3fb950}
-.badge{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:2px 8px;font-size:11px}
-#terminal{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin-bottom:12px}
-#terminal .t{color:#8b949e}.#terminal .tx{color:#3fb950}.#terminal .rx{color:#58a6ff}
-.pins{display:grid;grid-template-columns:repeat(auto-fill,minmax(60px,1fr));gap:4px;margin-bottom:12px}
-.pin{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 4px;text-align:center;font-size:10px;cursor:pointer;user-select:none;transition:all .15s}
-.pin .led{width:8px;height:8px;border-radius:50%;background:#30363d;margin:0 auto 2px}
-.pin.high .led{background:#fbbf24;box-shadow:0 0 6px #fbbf24}
-.pin.high{border-color:#fbbf24}
-.io{display:flex;gap:8px;flex-wrap:wrap}
-.io input{background:#161b22;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:4px 8px;font-family:inherit;font-size:12px;width:200px}
-.io button{background:#21262d;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:4px 12px;cursor:pointer;font-family:inherit;font-size:12px}
-.io button:hover{background:#30363d}
-.stats{font-size:11px;color:#8b949e}
-#evtLog{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;height:180px;overflow-y:auto;white-space:pre-wrap;font-size:11px;color:#8b949e}
-</style>
+<link rel="stylesheet" href="theme.css">
+<script>try{if(localStorage.getItem('stm32f1-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 </head>
 <body>
-<h1>STM32F1 WebSocket Viewer</h1>
-<div class="hdr">
-  <span class="dot" id="dot"></span>
+<header>
+  <h1>STM32 Bluepill Emulator</h1>
+  <span class="sub">WebSocket viewer</span>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="themeBtn" type="button">Dark mode</button>
+  <a class="nav" href="index.html">Demo</a>
+  <a class="nav" href="docs.html">Docs</a>
+  <a class="nav" href="about.html">About</a>
+</header>
+<main>
+<h1 style="font-family:Georgia,'Times New Roman',serif;font-size:24px;margin-bottom:12px;">WebSocket viewer</h1>
+<div class="ws-top">
+  <span class="dot ws-dot" id="dot"></span>
   <span id="status">Disconnected</span>
-  <span class="badge" id="fpsBadge">0 fps</span>
-  <span class="badge" id="instBadge">0 instr</span>
-  <input id="serverUrl" value="ws://localhost:8080" style="background:#161b22;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:2px 8px;font-family:inherit;font-size:12px;width:220px">
+  <span class="pill" id="fpsBadge">0 fps</span>
+  <span class="pill" id="instBadge">0 instr</span>
+  <input id="serverUrl" value="ws://localhost:8080" >
   <button onclick="connect()">Connect</button>
 </div>
 
-<div id="terminal"></div>
+<div class="ws-terminal" id="terminal"></div>
 
-<h2 style="font-size:13px;color:#8b949e;margin-bottom:6px">GPIO Pins</h2>
-<div class="pins" id="pinGrid"></div>
+<h2 class="ws-h">GPIO pins</h2>
+<div class="ws-pins" id="pinGrid"></div>
 
-<div class="io" style="margin-bottom:12px">
+<div class="ws-io" style="margin-bottom:12px">
   <input id="uartInput" placeholder="Type to send UART bytes..." onkeydown="if(event.key==='Enter')sendUart(this)">
   <button onclick="document.getElementById('uartInput').value='';document.getElementById('uartInput').focus()">UART1 TX</button>
 </div>
 
-<h2 style="font-size:13px;color:#8b949e;margin-bottom:6px">Event Log</h2>
-<div id="evtLog"></div>
+<h2 class="ws-h">Event log</h2>
+<div class="ws-evtlog" id="evtLog"></div>
 
 <script>
 const PORT_NAMES = ['A','B','C','D','E','F'];
@@ -61,7 +51,7 @@ const pinGrid = document.getElementById('pinGrid');
 for (let p = 0; p < 3; p++) {
   for (let n = 0; n < PINS_PER_PORT; n++) {
     const d = document.createElement('div');
-    d.className = 'pin'; d.id = `pin${p}${n}`;
+    d.className = 'ws-pin'; d.id = `pin${p}${n}`;
     d.innerHTML = `<div class="led"></div>${PORT_NAMES[p]}${n}`;
     d.onclick = () => togglePin(p, n);
     pinGrid.appendChild(d);
@@ -175,5 +165,7 @@ function connect() {
 
 connect();
 </script>
+</main>
+<script src="theme.js"></script>
 </body>
 </html>

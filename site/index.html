@@ -28,433 +28,16 @@
 }
 </script>
 <title>STM32 Bluepill Emulator — Live Demo | Run Arduino Firmware in Browser</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-:root {
-  --ink: #070b14;
-  --panel: #0d1526;
-  --panel-2: #0a1120;
-  --line: #1c2a44;
-  --line-soft: #14203a;
-  --txt: #dbe7f5;
-  --dim: #8ba0bd;
-  --faint: #54678a;
-  --cyan: #22d3ee;
-  --cyan-deep: #0e7490;
-  --amber: #fbbf24;
-  --green: #4ade80;
-  --red: #f87171;
-  --violet: #a78bfa;
-  --mono: 'Cascadia Mono', 'JetBrains Mono', ui-monospace, Consolas, monospace;
-}
-body {
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  color: var(--txt); min-height: 100vh; line-height: 1.5;
-  background:
-    radial-gradient(1100px 480px at 12% -8%, rgba(34,211,238,0.10), transparent 60%),
-    radial-gradient(900px 520px at 95% 110%, rgba(129,140,248,0.10), transparent 60%),
-    var(--ink);
-}
-body::before {
-  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  background-image:
-    linear-gradient(rgba(56,189,248,0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56,189,248,0.055) 1px, transparent 1px);
-  background-size: 28px 28px;
-  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, black 30%, transparent 100%);
-}
-body > * { position: relative; z-index: 1; }
+<link rel="stylesheet" href="theme.css">
+<script>try{if(localStorage.getItem('stm32f1-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 
-/* ── Header: command bar ─────────────────────────────────────────────────── */
-header {
-  background: rgba(7,11,20,0.82);
-  border-bottom: 1px solid var(--line-soft);
-  padding: 10px 24px;
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  position: sticky; top: 0; z-index: 100;
-  backdrop-filter: blur(12px);
-}
-header h1 {
-  font-size: 16px; font-weight: 800; letter-spacing: 0.2px;
-  background: linear-gradient(90deg, #67e8f9, #818cf8);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-header .sub { font-size: 11.5px; color: var(--faint); font-weight: 400; }
-header .spacer { flex: 1; }
-header a.nav {
-  font-size: 11.5px; font-weight: 600; color: var(--dim); text-decoration: none;
-  border: 1px solid var(--line); padding: 4px 13px; border-radius: 999px;
-  transition: all 0.15s ease; background: rgba(13,21,38,0.6);
-}
-header a.nav:hover { background: rgba(14,116,144,0.25); color: #a5f3fc; border-color: var(--cyan-deep); box-shadow: 0 0 10px rgba(34,211,238,0.25); }
-
-/* ── Status lamp ─────────────────────────────────────────────────────────── */
-.badge {
-  font-size: 11px; font-weight: 800; letter-spacing: 1.2px; text-transform: uppercase;
-  background: rgba(13,21,38,0.8); color: var(--dim);
-  border: 1px solid var(--line);
-  padding: 4px 13px 4px 11px; border-radius: 999px;
-  display: inline-flex; align-items: center; gap: 7px;
-  transition: all 0.2s ease;
-}
-.badge::before {
-  content: ''; width: 7px; height: 7px; border-radius: 50%;
-  background: #475569; transition: all 0.2s ease;
-}
-.badge.off { color: var(--dim); }
-.badge.running {
-  color: #bbf7d0; border-color: rgba(74,222,128,0.45);
-  box-shadow: 0 0 12px rgba(74,222,128,0.25), inset 0 0 8px rgba(74,222,128,0.08);
-}
-.badge.running::before { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 1.2s infinite; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-
-/* ── Hero: bench strip ─────────────────────────────────────────────────────── */
-.hero {
-  max-width: 1400px; margin: 0 auto; padding: 30px 24px 4px;
-  display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: center;
-}
-@media (max-width: 960px) { .hero { grid-template-columns: 1fr; } }
-.hero-text .eyebrow {
-  font-size: 10.5px; font-weight: 800; letter-spacing: 2.5px;
-  color: var(--cyan); margin-bottom: 8px;
-}
-.hero-text .eyebrow::before { content: '▸ '; color: var(--amber); }
-.hero-text h2 { font-size: 27px; font-weight: 800; letter-spacing: -0.4px; margin-bottom: 8px; }
-.hero-text h2 .glow { color: var(--cyan); text-shadow: 0 0 24px rgba(34,211,238,0.5); }
-.hero-text p { font-size: 13.5px; color: var(--dim); line-height: 1.65; max-width: 880px; }
-.hero-text code {
-  background: #020617; border: 1px solid var(--line); border-radius: 4px;
-  padding: 0 5px; font-size: 12px; color: #7dd3fc; font-family: var(--mono);
-}
-.hero-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.hero-chips .chip {
-  font-size: 11.5px; font-weight: 700; color: #a5f3fc;
-  background: rgba(34,211,238,0.07); border: 1px solid rgba(34,211,238,0.30);
-  padding: 3px 12px; border-radius: 999px;
-}
-.hero-chips .chip b { color: var(--amber); }
-.hero-links { display: flex; gap: 10px; flex-wrap: wrap; }
-.btn {
-  font-size: 13px; font-weight: 700; text-decoration: none; color: var(--txt);
-  background: var(--panel); border: 1px solid var(--line); padding: 9px 18px; border-radius: 8px;
-  transition: all 0.15s ease; white-space: nowrap;
-}
-.btn:hover { border-color: var(--cyan-deep); background: #12203a; box-shadow: 0 0 14px rgba(34,211,238,0.18); }
-.btn.primary { background: linear-gradient(180deg, #0ea5e9, #0284c7); border-color: #38bdf8; color: #04121c; box-shadow: 0 0 18px rgba(34,211,238,0.35); }
-.btn.primary:hover { filter: brightness(1.12); box-shadow: 0 0 26px rgba(34,211,238,0.5); }
-/* Motion safety: kill all animation/transition for users who ask for
-   reduced motion (migraine / vestibular triggers). */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-}
-
-/* ── Layout: the bench ─────────────────────────────────────────────────────── */
-.wrap {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 400px);
-  gap: 18px; padding: 18px 24px 0; max-width: 1400px; margin: 0 auto;
-  align-items: start;
-}
-/* DOM order is board-first; the bench puts the console on the left. */
-.wrap > div:first-child { order: 2; }
-.wrap > div:last-child { order: 1; }
-@media (max-width: 960px) { .wrap { grid-template-columns: 1fr; } }
-.deck-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.fullrow { max-width: 1400px; margin: 0 auto; padding: 0 24px; margin-top: 18px; }
-.term-section { margin-top: 4px; }
-.term-section h2 { margin-bottom: 8px; }
-.hint { font-size: 11.5px; color: var(--faint); margin: 0 0 12px; line-height: 1.6; }
-.hint code {
-  background: #020617; border: 1px solid var(--line); border-radius: 4px;
-  padding: 1px 5px; color: #7dd3fc; font-family: var(--mono);
-  font-size: 11px;
-}
-.gpio-placeholder { color: #3b4d6e; font-size: 13px; padding: 8px 0; font-style: italic; }
-.field-label {
-  font-size: 10px; font-weight: 800; letter-spacing: 1.5px;
-  color: var(--faint); margin-bottom: 6px;
-}
-.field-label::before { content: '▸ '; color: var(--cyan-deep); }
-
-/* ── Cards ───────────────────────────────────────────────────────────────── */
-.card {
-  background: linear-gradient(160deg, var(--panel) 0%, var(--panel-2) 100%);
-  border: 1px solid var(--line); border-radius: 14px; padding: 18px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.35), inset 0 1px 0 rgba(148,197,255,0.06);
-  transition: border-color 0.2s ease;
-}
-.card:hover { border-color: #2b3f61; }
-.card h2 {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 2px;
-  color: var(--faint); margin-bottom: 14px; font-weight: 800;
-  display: flex; align-items: center; gap: 8px;
-}
-.card h2::before {
-  content: ''; width: 8px; height: 8px; border-radius: 2px;
-  background: var(--cyan); box-shadow: 0 0 8px rgba(34,211,238,0.7);
-}
-/* per-bus accent rails */
-#showcaseCard { border-left: 3px solid var(--cyan); }
-#wsCard { border-left: 3px solid var(--violet); }
-#wsCard h2::before { background: var(--violet); box-shadow: 0 0 8px rgba(167,139,250,0.7); }
-#usbCard { border-left: 3px solid var(--green); }
-#usbCard h2::before { background: var(--green); box-shadow: 0 0 8px rgba(74,222,128,0.7); }
-#i2cCard { border-left: 3px solid var(--amber); }
-#i2cCard h2::before { background: var(--amber); box-shadow: 0 0 8px rgba(251,191,36,0.7); }
-
-/* ── Toolbar & Buttons ──────────────────────────────────────────────────── */
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-/* Board hardware row: NRST / BOOT0 / user button / LED lamp */
-#boardBtnRow button.armed { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 10px rgba(251,191,36,0.35); }
-#boardLed { font-size: 20px; color: #334155; line-height: 1; margin-left: 4px; }
-#boardLed.on { color: #4ade80; text-shadow: 0 0 10px rgba(74,222,128,0.8); }
-.toolbar .grow { flex: 1 1 200px; }
-button {
-  background: #0a1224; color: var(--dim); border: 1px solid var(--line);
-  padding: 7px 15px; border-radius: 7px; cursor: pointer;
-  font-size: 12px; font-weight: 700; transition: all 0.15s ease;
-}
-button:hover:not(:disabled) { background: rgba(14,116,144,0.30); color: #d9f6ff; border-color: var(--cyan-deep); }
-button:disabled { opacity: 0.30; cursor: not-allowed; }
-button.primary { background: linear-gradient(180deg, #0ea5e9, #0284c7); color: #04121c; border-color: #38bdf8; box-shadow: 0 0 14px rgba(34,211,238,0.30); }
-button.primary:hover:not(:disabled) { filter: brightness(1.12); color: #04121c; box-shadow: 0 0 22px rgba(34,211,238,0.45); }
-button.danger { border-color: rgba(248,113,113,0.4); color: var(--red); }
-button.danger:hover:not(:disabled) { background: rgba(153,27,27,0.45); color: #fff; border-color: var(--red); }
-#runBtn:not(:disabled) {
-  background: linear-gradient(180deg, #22c55e, #15803d); border-color: #4ade80; color: #04140a;
-  box-shadow: 0 0 16px rgba(74,222,128,0.35); padding: 7px 26px; font-size: 13px;
-}
-#runBtn:hover:not(:disabled) { filter: brightness(1.1); box-shadow: 0 0 26px rgba(74,222,128,0.5); }
-label.file-btn {
-  background: #0a1224; color: var(--dim); border: 1px dashed #2c3d5c;
-  padding: 7px 15px; border-radius: 7px; cursor: pointer;
-  font-size: 12px; font-weight: 700; display: inline-block; transition: all 0.15s ease;
-}
-label.file-btn:hover { background: rgba(14,116,144,0.25); color: #d9f6ff; border-color: var(--cyan-deep); border-style: solid; }
-input[type="file"] { display: none; }
-select {
-  background: #0a1224; color: var(--txt); border: 1px solid var(--line);
-  padding: 7px 10px; border-radius: 7px; font-size: 12px; font-weight: 600;
-  cursor: pointer; transition: all 0.15s ease; max-width: 100%;
-}
-select:hover { background: #0e1830; border-color: #33507e; }
-select:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(34,211,238,0.2); }
-.toolbar input[type="text"], .toolbar input:not([type]) {
-  background: #020617; border: 1px solid var(--line);
-  color: var(--txt); border-radius: 7px; padding: 7px 10px;
-  font-family: var(--mono); font-size: 12px;
-}
-.toolbar input:focus { outline: none; border-color: var(--cyan); }
-
-/* ── Instruments: LCD tiles ──────────────────────────────────────────────── */
-.instr {
-  display: grid; grid-template-columns: repeat(4, 1fr);
-  gap: 8px; margin: 12px 0;
-}
-.instr .tile {
-  background: #02060f; border: 1px solid var(--line-soft); border-radius: 8px;
-  padding: 7px 10px 6px; min-width: 0;
-  box-shadow: inset 0 2px 8px rgba(0,0,0,0.6);
-}
-.instr .tile.wide { grid-column: span 2; }
-.instr .k {
-  font-size: 9px; font-weight: 800; letter-spacing: 1.6px;
-  color: var(--faint); margin-bottom: 2px;
-}
-.instr .v {
-  font-family: var(--mono); font-size: 14px; font-weight: 700; color: var(--cyan);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  text-shadow: 0 0 10px rgba(34,211,238,0.35);
-}
-.instr .tile.hot .v { color: var(--amber); text-shadow: 0 0 10px rgba(251,191,36,0.35); }
-.instr .tile.go .v { color: var(--green); text-shadow: 0 0 10px rgba(74,222,128,0.35); }
-
-/* ── Terminal: serial monitor ─────────────────────────────────────────────── */
-.serial {
-  background: #02060f; border: 1px solid var(--line); border-radius: 10px;
-  overflow: hidden; box-shadow: inset 0 2px 12px rgba(0,0,0,0.6);
-}
-.serial-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 12px; background: rgba(13,21,38,0.9);
-  border-bottom: 1px solid var(--line-soft);
-  font-family: var(--mono); font-size: 11px; color: var(--dim);
-}
-.serial-bar .dots { display: inline-flex; gap: 5px; margin-right: 4px; }
-.serial-bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: #22314e; }
-.serial-bar .dots i:nth-child(1) { background: rgba(248,113,113,0.7); }
-.serial-bar .dots i:nth-child(2) { background: rgba(251,191,36,0.7); }
-.serial-bar .dots i:nth-child(3) { background: rgba(74,222,128,0.7); }
-.serial-bar .port {
-  font-weight: 700; color: var(--amber); letter-spacing: 0.5px;
-  border: 1px solid rgba(251,191,36,0.35); border-radius: 4px; padding: 0 7px;
-  background: rgba(251,191,36,0.06);
-}
-.serial-bar .spacer { flex: 1; }
-.serial-bar .live { color: var(--green); font-weight: 700; letter-spacing: 1px; font-size: 10px; }
-.serial-bar .live::before { content: '● '; }
-.terminal {
-  height: 250px; overflow-y: auto; padding: 10px 14px;
-  font-family: var(--mono);
-  font-size: 12.5px; line-height: 1.65;
-  scrollbar-width: thin; scrollbar-color: #22314e transparent;
-  text-shadow: 0 0 8px rgba(74,222,128,0.25);
-}
-.terminal::-webkit-scrollbar { width: 8px; }
-.terminal::-webkit-scrollbar-track { background: transparent; }
-.terminal::-webkit-scrollbar-thumb { background: #22314e; border-radius: 4px; }
-.terminal .t-in { color: #a5b4fc; }
-.terminal .t-out { color: #4ade80; }
-.terminal .t-err { color: #f87171; text-shadow: 0 0 8px rgba(248,113,113,0.4); }
-.terminal .t-ok { color: #4ade80; font-weight: 700; }
-.tx-row { display: flex; gap: 8px; margin-top: 10px; }
-.tx-row input {
-  flex: 1; background: #02060f; border: 1px solid var(--line);
-  color: var(--txt); border-radius: 7px; padding: 8px 12px;
-  font-family: var(--mono); font-size: 12px;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.tx-row input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(34,211,238,0.18); }
-.tx-row input:disabled { opacity: 0.45; }
-
-/* ── Board ───────────────────────────────────────────────────────────────── */
-.board-wrap { display: flex; justify-content: center; padding: 4px 0 2px; }
-.board { filter: drop-shadow(0 6px 18px rgba(0,0,0,0.55)) drop-shadow(0 0 24px rgba(34,80,180,0.25)); }
-.board text { font-family: var(--mono); }
-.led-label { font-size: 10px; fill: #64748b; }
-
-/* ── GPIO Grid ───────────────────────────────────────────────────────────── */
-.gpio-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 10.5px; font-family: var(--mono); }
-.gpio-port { background: #02060f; border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px; box-shadow: inset 0 2px 8px rgba(0,0,0,0.5); }
-.gpio-port h3 { font-size: 10px; color: var(--faint); margin-bottom: 5px; letter-spacing: 1.5px; font-weight: 800; }
-.gpio-pin { display: flex; justify-content: space-between; padding: 2px 5px; border-radius: 4px; color: #3b4d6e; transition: all 0.15s; }
-.gpio-pin.high { background: rgba(74,222,128,0.16); color: #4ade80; box-shadow: inset 0 0 8px rgba(74,222,128,0.12); }
-.gpio-pin.low { color: #3b4d6e; }
-.gpio-pin.in { color: var(--amber); }
-.gpio-pin.pwm { color: #22c55e; font-weight: bold; }
-.gpio-pin b { font-weight: 600; }
-.gpio-pin .alias { font-weight: 400; opacity: 0.6; font-size: 9px; }
-.legend { font-size: 10.5px; color: var(--faint); margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
-.legend span { display: inline-flex; align-items: center; gap: 5px; }
-.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.dot.hi { background: #4ade80; box-shadow: 0 0 6px rgba(74,222,128,0.8); }
-.dot.lo { background: #3b4d6e; }
-.dot.in { background: #fbbf24; box-shadow: 0 0 6px rgba(251,191,36,0.6); }
-
-/* ── Showcase peripherals ────────────────────────────────────────────────── */
-.periph-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.periph-dev {
-  background: linear-gradient(160deg, #0a1120, #060b16);
-  border: 1px solid var(--line-soft); border-radius: 10px; padding: 12px;
-  transition: border-color 0.2s ease, transform 0.2s ease;
-}
-.periph-dev:hover { border-color: #2b3f61; transform: translateY(-1px); }
-.periph-dev h4 {
-  font-size: 10px; color: var(--faint); letter-spacing: 1.4px;
-  margin-bottom: 8px; text-transform: uppercase; font-weight: 800;
-}
-.periph-dev canvas {
-  display: block; background: #000; image-rendering: pixelated;
-  width: 100%; border-radius: 6px;
-  border: 1px solid var(--line-soft); box-shadow: inset 0 0 24px rgba(0,0,0,0.7), 0 0 16px rgba(34,211,238,0.07);
-}
-.displays { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-#seg-svg { width: 100%; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4)); }
-#seg-svg .seg { fill: #1a1a2e; stroke: #2a2a3e; stroke-width: 1.5; }
-#seg-svg .seg.on { fill: #ef4444; stroke: #dc2626; filter: drop-shadow(0 0 4px rgba(239,68,68,0.7)); }
-#rgb-bar { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
-.rgb-ch {
-  width: 32px; height: 32px; border-radius: 50%; background: #0a0f1a;
-  border: 2px solid #1e293b; transition: background 100ms ease, box-shadow 100ms ease, border-color 100ms ease;
-}
-.rgb-ch.on { border-color: transparent; }
-.ws-strip {
-  display: flex; gap: 10px; margin: 10px 0; align-items: center;
-  padding: 10px 14px; background: #020810; border-radius: 10px;
-  border: 1px solid #0c1a2a;
-}
-.ws-led {
-  width: 32px; height: 32px; border-radius: 50%; background: #0a0f1a;
-  border: 2px solid #1e293b; transition: background 60ms ease, box-shadow 100ms ease;
-}
-.ws-led[style*="rgb("] { border-color: transparent; }
-.ws-count {
-  font-size: 12px; color: var(--faint); margin-left: auto;
-  font-family: var(--mono);
-}
-#buzz-ind {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; border-radius: 50%;
-  background: #0a0f1a; border: 2px solid #1e293b; color: #475569;
-  font-size: 18px; transition: all 0.15s ease;
-}
-#buzz-ind.on {
-  border-color: #f59e0b; color: #fbbf24;
-  background: rgba(245,158,11,0.08);
-  box-shadow: 0 0 20px rgba(245,158,11,0.5), 0 0 40px rgba(245,158,11,0.15);
-  animation: buzzPulse 0.3s ease infinite alternate;
-}
-@keyframes buzzPulse { from { transform: scale(1); } to { transform: scale(1.08); } }
-#btn-widget {
-  width: 100%; padding: 10px; font-size: 13px; font-weight: 600;
-  border-radius: 8px; transition: all 0.12s ease;
-}
-#btn-widget:active { background: #92400e; transform: scale(0.98); }
-
-/* ── Keyboard hints ──────────────────────────────────────────────────────── */
-.kbd {
-  display: inline-block; font-size: 10px; background: #02060f; border: 1px solid var(--line);
-  border-radius: 4px; padding: 0 5px; color: var(--dim); font-family: var(--mono);
-  line-height: 1.6; margin-left: 4px; vertical-align: middle;
-  box-shadow: 0 2px 0 rgba(0,0,0,0.5);
-}
-.tx-row { position: relative; }
-.tx-row .send-hint {
-  font-size: 10.5px; color: #2c3d5c; position: absolute; right: 8px; top: -16px;
-}
-
-/* ── Footer ──────────────────────────────────────────────────────────────── */
-footer {
-  text-align: center; font-size: 11.5px; color: var(--faint);
-  padding: 20px 24px 30px; border-top: 1px solid var(--line-soft); margin-top: 32px;
-}
-footer a { color: var(--dim); text-decoration: none; transition: color 0.15s; }
-footer a:hover { color: var(--cyan); text-decoration: underline; }
-footer .foot-tag {
-  display: inline-block; margin-top: 8px; font-family: var(--mono); font-size: 10px;
-  letter-spacing: 1px; color: #2c3d5c;
-}
-
-/* ── Responsive ──────────────────────────────────────────────────────────── */
-@media (min-width: 1100px) {
-  .gpio-grid { grid-template-columns: repeat(4, 1fr); }
-}
-@media (max-width: 1100px) {
-  .instr { grid-template-columns: repeat(2, 1fr); }
-  .instr .tile.wide { grid-column: span 2; }
-}
-@media (max-width: 640px) {
-  header { padding: 10px 14px; gap: 8px; }
-  header h1 { font-size: 15px; }
-  header .sub { display: none; }
-  .hero { padding: 20px 14px 2px; }
-  .hero-text h2 { font-size: 21px; }
-  .wrap { padding: 12px 14px 0; gap: 12px; }
-  .fullrow { padding: 0 14px; }
-  .card { padding: 14px; }
-  .gpio-grid { grid-template-columns: 1fr 1fr; }
-  .periph-grid { grid-template-columns: 1fr; }
-  .displays { grid-template-columns: 1fr; }
-  .instr { grid-template-columns: repeat(2, 1fr); }
-}
-</style>
 </head>
 <body>
 <header>
-    <h1>&#x25C8; STM32 Bluepill Emulator</h1>
+    <h1>STM32 Bluepill Emulator</h1>
     <span class="sub">STM32F103C8 &middot; full-system WASM emulation in your browser</span>
     <span class="spacer"></span>
+    <button class="theme-btn" id="themeBtn" type="button">Dark mode</button>
     <a class="nav" href="index.html">Demo</a>
     <a class="nav" href="docs.html">Docs</a>
     <a class="nav" href="about.html">About</a>
@@ -464,12 +47,12 @@ footer .foot-tag {
 
 <section class="hero">
     <div class="hero-text">
-        <div class="eyebrow">Full-system &middot; WebAssembly &middot; Cortex-M3</div>
-        <h2>Run real STM32 firmware <span class="glow">in your browser.</span></h2>
-        <p>Full-system emulation of the STM32F103 Blue Pill (and GD32, Maple Mini,
-        Nucleo, F103RC, F105 variants) — a native Rust ARM Cortex-M3 core plus
-        the complete peripheral set, compiled to one WebAssembly module.
-        Pick a preset below and press <b>Run</b>, or load your own
+        <div class="eyebrow">Bench notes · No. 04 — full-system build</div>
+        <h2>STM32 firmware, running on your desk<span class="glow">.</span></h2>
+        <p>This page boots real STM32F103 firmware — Blue Pill, GD32, Maple Mini,
+        Nucleo, F103RC, F105 — inside one WebAssembly module: a native Rust
+        ARM Cortex-M3 core plus the whole peripheral set. Pick a preset below
+        and press <b>Run</b>, or load your own
         <code>.bin</code> / <code>.hex</code> / <code>.elf</code>.</p>
         <div class="hero-chips">
             <span class="chip"><b>~70M</b> IPS headless</span>
@@ -479,9 +62,9 @@ footer .foot-tag {
         </div>
     </div>
     <div class="hero-links">
-        <a class="btn primary" href="#demo">Try the demo</a>
-        <a class="btn" href="docs.html">Read the docs</a>
-        <a class="btn" href="about.html">About the project</a>
+        <a class="btn primary" href="#demo">Start with Blink</a>
+        <a class="btn" href="docs.html">Usage notes</a>
+        <a class="btn" href="about.html">Why this exists</a>
     </div>
 </section>
 
@@ -501,8 +84,8 @@ footer .foot-tag {
     <div>
         <div class="card">
             <h2>Console</h2>
-            <p class="hint">Pick a <b>preset</b> for the selected <b>chip</b> — the menu shows only that board's demos (or load your own <code>.bin</code>/<code>.hex</code>/<code>.elf</code>), then press <b>Run</b>. Some demos auto-run and print results in the terminal below. Load a <code>.map</code> after the firmware for PC&nbsp;→&nbsp;symbol names.</p>
-            <div class="field-label">Firmware</div>
+            <p class="hint">Start with <b>Blink</b> or <b>UART Echo</b>, press <b>Load preset</b>, then <b>Run</b>. Output lands in the serial monitor below. Your own <code>.bin</code>/<code>.hex</code>/<code>.elf</code> works too — add a <code>.map</code> for readable PC symbols.</p>
+            <div class="field-label">Firmware image</div>
             <div class="toolbar">
                 <select id="presetSelect" class="grow">
                     <optgroup label="Getting started">
@@ -569,7 +152,7 @@ footer .foot-tag {
                 </select>
                 <button id="loadPresetBtn" class="primary">Load Preset</button>
             </div>
-            <div class="field-label">Your image / transport</div>
+            <div class="field-label">Upload your own</div>
             <div class="toolbar">
                 <label class="file-btn">Load .bin / .hex <input type="file" id="binInput" accept=".bin,.hex"></label>
                 <label class="file-btn">Load .elf <input type="file" id="elfInput" accept=".elf"></label>
@@ -603,7 +186,7 @@ footer .foot-tag {
             <input id="uartInput" placeholder="Type to send bytes to UART RX (Serial.available / read)…" disabled>
             <button id="sendBtn" disabled>Send</button>
         </div>
-        <span style="font-size:10.5px; color:#334155; margin-top:4px;">Press <span class="kbd">Enter</span> to send</span>
+        <span style="font-size:11px; color:var(--faint); margin-top:4px;">Press <span class="kbd">Enter</span> to send</span>
             </div>
         </div>
     </div>
@@ -2381,13 +1964,14 @@ function sendUart() {
 renderBoard(false);
 log('Pick a preset firmware, or load a .bin/.hex/.elf firmware and a .map for symbol names. Upload .map after the firmware for PC → symbol resolution.');
 </script>
+<script src="theme.js"></script>
 <footer>
     STM32 Bluepill Emulator &middot; full-system emulation via WebAssembly + native Rust ARM Cortex-M3 &middot;
     <a href="https://github.com/danish9661/STM32F1-emulator" target="_blank" rel="noopener">Source</a> &middot;
     <a href="docs.html">Docs</a> &middot;
     <a href="about.html">About</a>
-    <span style="margin-left:12px; color:#1e293b;">|</span>
-    <span style="margin-left:12px; font-size:10px; color:#334155;">Built with Rust + WASM</span>
+    <span style="margin-left:12px; color:var(--line);">|</span>
+    <span style="margin-left:12px; font-size:10px; color:var(--faint);">Built with Rust + WASM</span>
     <br><span class="foot-tag">GPIO · UART · SPI · I2C · TIM · ADC · DAC · DMA · CAN · USB · SDIO · FSMC</span>
 </footer>
 </body>

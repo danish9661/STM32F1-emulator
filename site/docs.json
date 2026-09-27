@@ -60,6 +60,11 @@
   "blurb": "STM32F1 wrapper, events, injection"
  },
  {
+  "file": "STM32F1_Guide.md",
+  "title": "User Guide (full manual)",
+  "blurb": "Architecture to API: the whole emulator in one document"
+ },
+ {
   "file": "COVERAGE.md",
   "title": "Coverage audit",
   "blurb": "SVD census, depth gaps, test counts"

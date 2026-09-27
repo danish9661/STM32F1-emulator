@@ -27,265 +27,22 @@
 }
 </script>
 <title>About — STM32 Bluepill Emulator (STM32F103C8 in WASM)</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-:root {
-  --ink: #070b14; --panel: #0d1526; --panel-2: #0a1120;
-  --line: #1c2a44; --line-soft: #14203a;
-  --txt: #dbe7f5; --dim: #8ba0bd; --faint: #54678a;
-  --cyan: #22d3ee; --cyan-deep: #0e7490; --amber: #fbbf24; --green: #4ade80;
-  --mono: 'Cascadia Mono', 'JetBrains Mono', ui-monospace, Consolas, monospace;
-}
-body {
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  color: var(--txt); line-height: 1.7;
-  background:
-    radial-gradient(1100px 480px at 12% -8%, rgba(34,211,238,0.10), transparent 60%),
-    radial-gradient(900px 520px at 95% 110%, rgba(129,140,248,0.10), transparent 60%),
-    var(--ink);
-}
-body::before {
-  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  background-image:
-    linear-gradient(rgba(56,189,248,0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56,189,248,0.055) 1px, transparent 1px);
-  background-size: 28px 28px;
-  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, black 30%, transparent 100%);
-}
-body > * { position: relative; z-index: 1; }
-
-/* ── Header ──────────────────────────────────────────────────────────────── */
-header { background: rgba(7,11,20,0.82); border-bottom: 1px solid var(--line-soft); padding: 10px 24px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px); }
-header h1 { font-size: 16px; font-weight: 800; background: linear-gradient(90deg, #67e8f9, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-header .sub { font-size: 11.5px; color: var(--faint); font-weight: 400; }
-header .spacer { flex: 1; }
-header a.nav { font-size: 11.5px; font-weight: 600; color: var(--dim); text-decoration: none; border: 1px solid var(--line); padding: 4px 13px; border-radius: 999px; background: rgba(13,21,38,0.6); transition: all 0.15s ease; }
-header a.nav:hover { background: rgba(14,116,144,0.25); color: #a5f3fc; border-color: var(--cyan-deep); box-shadow: 0 0 10px rgba(34,211,238,0.25); }
-
-/* ── Layout ──────────────────────────────────────────────────────────────── */
-main { max-width: 920px; margin: 0 auto; padding: 30px 24px 60px; }
-.hero-mini { margin-bottom: 6px; }
-.hero-mini .eyebrow { font-size: 10.5px; font-weight: 800; letter-spacing: 2.5px; color: var(--cyan); margin-bottom: 8px; }
-.hero-mini .eyebrow::before { content: '▸ '; color: var(--amber); }
-.hero-mini h1 { font-size: 27px; font-weight: 800; letter-spacing: -0.4px; }
-.hero-mini h1 .glow { color: var(--cyan); text-shadow: 0 0 24px rgba(34,211,238,0.5); }
-
-/* ── Headings ────────────────────────────────────────────────────────────── */
-h2 {
-  font-size: 11px; color: var(--faint); margin: 34px 0 14px;
-  text-transform: uppercase; letter-spacing: 2px; font-weight: 800;
-  display: flex; align-items: center; gap: 8px;
-}
-h2::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--cyan); box-shadow: 0 0 8px rgba(34,211,238,0.7); }
-h2:first-child { margin-top: 0; }
-h3 { font-size: 14px; color: var(--dim); margin: 20px 0 8px; font-weight: 700; }
-
-/* ── Text ────────────────────────────────────────────────────────────────── */
-p, li { font-size: 14.5px; color: var(--dim); }
-ul, ol { padding-left: 22px; }
-li { margin: 5px 0; }
-strong { color: var(--txt); }
-a { color: var(--cyan); text-decoration: none; transition: color 0.15s; }
-a:hover { color: #a5f3fc; text-decoration: underline; }
-code {
-  background: #02060f; border: 1px solid var(--line); border-radius: 4px;
-  padding: 1px 6px; font-size: 0.88em; color: #7dd3fc;
-  font-family: var(--mono);
-}
-
-/* ── Cards ───────────────────────────────────────────────────────────────── */
-.card {
-  background: linear-gradient(160deg, var(--panel), var(--panel-2));
-  border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px;
-  margin: 14px 0; transition: border-color 0.2s;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-}
-.card:hover { border-color: #2b3f61; }
-.card p { color: var(--dim); font-size: 14px; }
-.card p + p { margin-top: 8px; }
-.card ul { margin-top: 8px; }
-
-/* ── Badges ──────────────────────────────────────────────────────────────── */
-.badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
-.badge {
-  font-size: 11px; background: rgba(13,21,38,0.7); color: var(--dim);
-  border: 1px solid var(--line); padding: 4px 13px; border-radius: 999px;
-  font-weight: 700; letter-spacing: 0.2px; transition: all 0.15s;
-}
-.badge:hover { border-color: var(--cyan-deep); color: #a5f3fc; }
-.badge.accent { background: linear-gradient(180deg, #0ea5e9, #0284c7); color: #04121c; border-color: #38bdf8; box-shadow: 0 0 12px rgba(34,211,238,0.3); }
-
-/* ── Stat grid ───────────────────────────────────────────────────────────── */
-.stat-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px; margin: 16px 0;
-}
-.stat {
-  background: #02060f; border: 1px solid var(--line-soft); border-radius: 10px;
-  padding: 14px 16px; transition: border-color 0.2s;
-  box-shadow: inset 0 2px 8px rgba(0,0,0,0.6);
-}
-.stat:hover { border-color: var(--cyan-deep); }
-.stat b {
-  display: block; font-size: 22px; font-weight: 800;
-  font-family: var(--mono); color: var(--cyan);
-  text-shadow: 0 0 12px rgba(34,211,238,0.35);
-}
-.stat span { font-size: 11px; color: var(--faint); letter-spacing: 0.4px; }
-
-/* ── Code blocks ─────────────────────────────────────────────────────────── */
-pre {
-  background: #02060f; border: 1px solid var(--line); border-radius: 10px;
-  padding: 14px 16px; font-family: var(--mono);
-  font-size: 12.5px; line-height: 1.65; overflow-x: auto; color: var(--dim);
-  margin: 10px 0 14px; box-shadow: inset 0 2px 12px rgba(0,0,0,0.6);
-  scrollbar-width: thin; scrollbar-color: #22314e transparent;
-}
-pre::-webkit-scrollbar { height: 6px; }
-pre::-webkit-scrollbar-track { background: transparent; }
-pre::-webkit-scrollbar-thumb { background: #22314e; border-radius: 3px; }
-pre .c { color: #3b4d6e; }  /* comment */
-pre .k { color: #c084fc; }  /* keyword */
-pre .s { color: #4ade80; }  /* string */
-pre .n { color: #38bdf8; }  /* name */
-pre .g { color: #fbbf24; }  /* number */
-
-/* ── Tables ──────────────────────────────────────────────────────────────── */
-.ptable-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 10px; margin: 10px 0 14px; }
-.ptable {
-  width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 560px;
-}
-.ptable th {
-  text-align: left; color: var(--faint); text-transform: uppercase;
-  font-size: 10px; letter-spacing: 1px; border-bottom: 1px solid var(--line);
-  padding: 9px 12px; font-weight: 800; background: rgba(13,21,38,0.7); white-space: nowrap;
-}
-.ptable td {
-  padding: 9px 12px; border-bottom: 1px solid var(--line-soft);
-  color: var(--dim); vertical-align: top;
-}
-.ptable tr:hover td { background: rgba(34,211,238,0.04); }
-.ptable td.n {
-  color: var(--cyan); font-family: var(--mono);
-  font-weight: 700; font-size: 12px; white-space: nowrap;
-}
-.tag {
-  display: inline-block; font-size: 10px; background: rgba(74,222,128,0.12); color: #6ee7b7;
-  border: 1px solid rgba(74,222,128,0.35); padding: 2px 8px; border-radius: 999px; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;
-}
-.tag.stub { background: rgba(13,21,38,0.7); color: var(--faint); border-color: var(--line); }
-
-/* ── FAQ (collapsible) ───────────────────────────────────────────────────── */
-details {
-  background: rgba(13,21,38,0.6); border: 1px solid var(--line-soft); border-radius: 10px;
-  margin: 8px 0; transition: border-color 0.2s;
-}
-details:hover { border-color: #2b3f61; }
-details[open] { border-color: var(--cyan-deep); }
-details summary {
-  padding: 11px 15px; cursor: pointer; font-size: 13.5px; font-weight: 700;
-  color: var(--txt); list-style: none; display: flex; align-items: center; gap: 10px;
-  -webkit-tap-highlight-color: transparent;
-}
-details summary::-webkit-details-marker { display: none; }
-details summary::before {
-  content: '+'; font-size: 15px; color: var(--cyan); font-weight: 800;
-  transition: transform 0.15s; display: inline-block; width: 14px; flex: none;
-}
-details[open] summary::before { content: '−'; }
-details .faq-body { padding: 0 15px 13px 39px; font-size: 13.5px; color: var(--dim); }
-
-/* ── Ordered lists (numbered steps) ──────────────────────────────────────── */ol { counter-reset: step; list-style: none; padding-left: 0; }
-ol li { counter-increment: step; padding-left: 30px; position: relative; }
-ol li::before {
-  content: counter(step); position: absolute; left: 0; top: 2px;
-  width: 19px; height: 19px; border-radius: 50%;
-  background: #02060f; border: 1px solid var(--cyan-deep);
-  font-size: 10px; font-weight: 800; color: var(--cyan);
-  display: flex; align-items: center; justify-content: center;
-}
-
-/* ── Footer ──────────────────────────────────────────────────────────────── */
-footer {
-  border-top: 1px solid var(--line-soft); padding: 20px 24px 30px; text-align: center;
-  font-size: 11.5px; color: var(--faint);
-}
-footer a { color: var(--dim); text-decoration: none; transition: color 0.15s; }
-footer a:hover { color: var(--cyan); text-decoration: underline; }
-
-/* ── Figures & flowcharts ────────────────────────────────────────────────── */
-figure.shot { margin: 14px 0; }
-figure.shot img {
-  width: 100%; height: auto; display: block; border-radius: 12px;
-  border: 1px solid var(--line);
-  box-shadow: 0 14px 44px rgba(0,0,0,0.5), 0 0 30px rgba(34,211,238,0.10);
-}
-figure.shot figcaption { font-size: 12px; color: var(--faint); margin-top: 8px; line-height: 1.6; }
-.flow {
-  width: 100%; height: auto; display: block; margin: 14px 0 4px;
-  background: #02060f; border: 1px solid var(--line-soft); border-radius: 12px;
-  padding: 10px; box-shadow: inset 0 2px 12px rgba(0,0,0,0.6);
-}
-.flow text { font-family: var(--mono); }
-/* Animated pipeline: packets ride the top run, the core node breathes, the
-   loop-back dashes slide. All pure CSS — no JS to break. */
-.flow .pkt {
-  offset-path: path('M8,80 L792,80');
-  offset-distance: 0%;
-  animation: pktMove 2.8s linear infinite;
-  filter: drop-shadow(0 0 4px rgba(34,211,238,0.9));
-}
-.flow .pkt.p2 { animation-delay: -0.9s; }
-.flow .pkt.p3 { animation-delay: -1.8s; }
-@keyframes pktMove { from { offset-distance: 0%; } to { offset-distance: 100%; } }
-.flow .flow-cpu rect { animation: cpuBreathe 2.4s ease-in-out infinite; }
-@keyframes cpuBreathe {
-  0%, 100% { stroke: #22d3ee; }
-  50% { stroke: #a5f3fc; stroke-width: 2.5; }
-}
-.flow .flow-loop { animation: loopSlide 1.1s linear infinite; }
-@keyframes loopSlide { to { stroke-dashoffset: -22; } }
-.flow .flow-link { animation: linkSlide 1.1s linear infinite; }
-@keyframes linkSlide { to { stroke-dashoffset: -20; } }
-.flow .pkt.q1 { offset-path: path('M8,48 L912,48'); }
-.flow .pkt.q2, .flow .pkt.q3 { offset-path: path('M8,50 L912,50'); }
-.flow .pkt.q3 { animation-delay: -1.4s; }
-@media (prefers-reduced-motion: reduce) {
-  .flow .pkt { animation: none; opacity: 0; }
-  .flow .flow-cpu rect, .flow .flow-loop, .flow .flow-link { animation: none; }
-}
-figcaption.cap { font-size: 12px; color: var(--faint); margin: 2px 0 8px; line-height: 1.6; }
-
-/* ── Mobile ──────────────────────────────────────────────────────────────── */
-@media (max-width: 640px) {
-  header { padding: 10px 14px; gap: 8px; }
-  header .sub { display: none; }
-  main { padding: 20px 14px 44px; }
-  .hero-mini h1 { font-size: 22px; }
-  p, li { font-size: 13.5px; }
-  .card { padding: 15px 16px; }
-  .stat-grid { grid-template-columns: 1fr 1fr; }
-  .stat b { font-size: 18px; }
-  .stat { padding: 11px 13px; }
-  pre { font-size: 11.5px; padding: 12px; }
-  details .faq-body { padding: 0 12px 11px 12px; }
-  .badge-row { gap: 6px; }
-  .ptable { display: block; overflow-x: auto; }
-}
-</style>
+<link rel="stylesheet" href="theme.css">
+<script>try{if(localStorage.getItem('stm32f1-theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
 </head>
 <body>
 <header>
-    <h1>&#x25C8; STM32 Bluepill Emulator</h1>
+    <h1>STM32 Bluepill Emulator</h1>
     <span class="sub">About this project</span>
     <span class="spacer"></span>
+    <button class="theme-btn" id="themeBtn" type="button">Dark mode</button>
     <a class="nav" href="index.html">&#8592; Live Demo</a>
     <a class="nav" href="docs.html">Docs</a>
     <a class="nav" href="https://github.com/danish9661/STM32F1-emulator" target="_blank" rel="noopener">GitHub</a>
 </header>
 <main>
 <div class="hero-mini">
-    <div class="eyebrow">The project</div>
+    <div class="eyebrow">Project notes · started on real hardware, finished in the browser</div>
     <h1>Why emulate a <span class="glow">Blue Pill?</span></h1>
 </div>
 
@@ -457,11 +214,11 @@ timing, interrupts and electrical behaviour, all in one WebAssembly module.</p>
 </div>
 
 <h2>Emulated peripherals</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:12px;">
+<p class="lede">
 &ldquo;Full&rdquo; means register-accurate with timing, interrupts and DMA support where applicable.
 </p>
 
-<table class="ptable">
+<div class="ptable-wrap"><table class="ptable">
 <thead>
 <tr><th>Peripheral</th><th>Instances</th><th>Details</th><th>Status</th></tr>
 </thead>
@@ -557,7 +314,7 @@ timing, interrupts and electrical behaviour, all in one WebAssembly module.</p>
     <td>Firmware <code>printf</code> channel draining as host-side events.</td>
     <td><span class="tag">Full</span></td></tr>
 </tbody>
-</table>
+</table></div>
 
 <h2>Exceptions and interrupts</h2>
 <div class="card">
@@ -572,7 +329,7 @@ timing, interrupts and electrical behaviour, all in one WebAssembly module.</p>
 </div>
 
 <h2>CLI usage</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:8px;">
+<p class="lede">
 The command-line interface runs firmware headlessly in Node.js. Install globally or use <code>npx</code>:
 </p>
 
@@ -609,7 +366,7 @@ node pkg/cli.mjs <span class="g">--regs</span> firmware.elf</pre>
 </div>
 
 <h2>Library API</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:8px;">
+<p class="lede">
 Use the emulator programmatically from Node.js or the browser:
 </p>
 
@@ -634,13 +391,13 @@ emu.<span class="n">uartRxBytes</span>(<span class="n">Buffer</span>.from(<span 
 emu.<span class="n">close</span>();                        <span class="c">// free WASM memory</span></pre>
 
 <h2>Browser demo features</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:8px;">
+<p class="lede">
 The live demo (<a href="index.html">index.html</a>) runs entirely in the browser with no server needed &mdash; just open the page or serve it with <code>python3 -m http.server -d site</code>. Worker off-thread + OffscreenCanvas + adaptive batch + <code>batch_size</code> option (<code>site/worker.js:1</code>, <code>pkg/emulator.js</code>) — see <code>docs/USAGE.md</code>.
 </p>
 
 <h3>43 built-in presets</h3>
-<p style="font-size:13px; color:#54678a; margin-bottom:8px;">Starter ten below — plus TIM DMA-burst PWM, servo, RTC clock, DAC sine, I2C scanner/slave, CAN chat, dual-CAN, USB CDC/serial, OTG CDC/host, DFU bootloader, Mini-RTOS, SD logger and per-board builds (Blue Pill, Maple Mini, Nucleo, F103RC).</p>
-<table class="ptable">
+<p class="lede">Starter ten below — plus TIM DMA-burst PWM, servo, RTC clock, DAC sine, I2C scanner/slave, CAN chat, dual-CAN, USB CDC/serial, OTG CDC/host, DFU bootloader, Mini-RTOS, SD logger and per-board builds (Blue Pill, Maple Mini, Nucleo, F103RC).</p>
+<div class="ptable-wrap"><table class="ptable">
 <thead>
 <tr><th>Preset</th><th>Description</th></tr>
 </thead>
@@ -656,7 +413,7 @@ The live demo (<a href="index.html">index.html</a>) runs entirely in the browser
 <tr><td class="n">WS2812 Strip</td><td>8-LED rainbow animation over SPI1 + DMA1 CH3</td></tr>
 <tr><td class="n">Custom Upload</td><td>Load your own <code>.bin</code>, <code>.hex</code> or <code>.elf</code> file</td></tr>
 </tbody>
-</table>
+</table></div>
 
 <h3>Interactive features</h3>
 <div class="card">
@@ -681,7 +438,7 @@ The live demo (<a href="index.html">index.html</a>) runs entirely in the browser
 </div>
 
 <h2>Custom peripherals</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:8px;">
+<p class="lede">
 Add your own memory-mapped devices via JavaScript callbacks. The API matches the rp2040js bus model &mdash; register a base address, size, and read/write handlers:
 </p>
 
@@ -702,12 +459,12 @@ Add your own memory-mapped devices via JavaScript callbacks. The API matches the
 }];</pre>
 <pre>node pkg/cli.mjs <span class="g">--periph-plugin=./my_periph.mjs</span> firmware.elf</pre>
 
-<p style="font-size:13px; color:#94a3b8; margin-top:10px;">
+<p class="lede">
 Callbacks receive the <strong>absolute address</strong> (not offset from base). The bus uses last-wins overlap, so a plugin can override a built-in peripheral.
 </p>
 
 <h2>Testing</h2>
-<p style="font-size:13px; color:#64748b; margin-bottom:10px;">
+<p class="lede">
 The emulator has a three-tier test suite that runs in CI on every push:
 </p>
 
@@ -784,5 +541,6 @@ The emulator has a three-tier test suite that runs in CI on every push:
     <a href="https://github.com/danish9661/STM32F1-emulator" target="_blank" rel="noopener">Source</a> &middot;
     <a href="index.html">Live Demo</a>
 </footer>
+<script src="theme.js"></script>
 </body>
 </html>
