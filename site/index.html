@@ -202,7 +202,7 @@
             </div>
             <div class="periph-dev"><h4>7-Segment · 74HC595 (SPI1·PA4)</h4><div id="segHost"></div></div>
             <div class="periph-dev"><h4>RGB LED · TIM2 CH1-3 (PA0-2)</h4><div id="rgb-bar"><div class="rgb-ch" id="rgb-r" title="Red (PA0)"></div><div class="rgb-ch" id="rgb-g" title="Green (PA1)"></div><div class="rgb-ch" id="rgb-b" title="Blue (PA2)"></div></div></div>
-            <div class="periph-dev"><h4>Buzzer · PB14</h4><span id="buzz-ind">♪</span></div>
+            <div class="periph-dev"><h4>Buzzer · PB14</h4><span id="buzz-ind">♪</span><button id="buzz-mute" type="button" title="Sound is off until you enable it (browsers block audio before a click)">🔇 sound off</button></div>
             <div class="periph-dev"><h4>Button · PB13 EXTI13</h4><button id="btn-widget">Press PB13</button></div>
         </div>
     </div>
@@ -352,6 +352,9 @@ function handleWorkerMsg(e) {
         else { const d=document.createElement('span'); d.className='t-out'; d.textContent=ch; terminal.appendChild(d); }
       }
       if (stick) terminal.scrollTop = terminal.scrollHeight;
+      // Buzzer beep follows the firmware's own t=Ns tick line
+      // (PB14 is held high 200ms per emulated second).
+      if (/^t=\d+s btn=\d+ rg=[0-9A-F]{6} buzz=1/m.test(txt)) buzzAudio(true);
     }
     // USB CDC host tap
     if (m.usbIn) for (const p of m.usbIn) usbInbox.push(p);
@@ -972,7 +975,6 @@ function renderShowcase() {
 const SEG_SPI_DR = 0x4001300C;
 let segDigits = [0x3F, 0x3F, 0x3F, 0x3F], segNeed = 0;
 let segFrame = [];
-const SEG_PAT = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F, 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71];
 // 74HC595 decode WITHOUT pin-level gating: pin events and the write tap
 // drain in separate per-batch phases (events first), so any CS-level gate
 // misses a pulse that opens and closes inside one 20K batch — and the LCD
@@ -992,11 +994,60 @@ const segSpiWatch = (addr, width, value) => {
     if (segFrame.length >= 4) { segDigits = segFrame.slice(0, 4); segNeed = 0; }
 };
 
+// Buzzer sound via WebAudio: the showcase firmware holds PB14 high for
+// 200ms each emulated second (active buzzer beep). Beeping from the pin
+// level would chatter with every GPIO sample, so sound follows the same
+// UART t=Ns tick the firmware prints: one short 2kHz beep per tick line.
+// Created lazily on the mute-toggle click (browsers block AudioContext
+// before a user gesture); toggling back off suspends it.
+let buzzCtx = null, buzzMuted = true;
+function buzzAudio(tickLine) {
+    const ind = $('buzz-ind');
+    const btn = $('buzz-mute');
+    if (tickLine === null) { // initEmulator reset: stop any in-flight beep
+        if (buzzCtx) { try { buzzCtx.suspend(); } catch {} }
+        return;
+    }
+    if (buzzMuted || !tickLine) return;
+    try {
+        buzzCtx = buzzCtx || new (window.AudioContext || window.webkitAudioContext)();
+        if (buzzCtx.state === 'suspended') buzzCtx.resume();
+        const t0 = buzzCtx.currentTime;
+        const osc = buzzCtx.createOscillator();
+        const gain = buzzCtx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 2000;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+        osc.connect(gain).connect(buzzCtx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.2);
+    } catch {}
+}
+$('buzz-mute')?.addEventListener('click', () => {
+    buzzMuted = !buzzMuted;
+    const btn = $('buzz-mute');
+    if (btn) btn.textContent = buzzMuted ? '🔇 sound off' : '🔊 sound on';
+    if (!buzzMuted) {
+        try {
+            buzzCtx = buzzCtx || new (window.AudioContext || window.webkitAudioContext)();
+            buzzCtx.resume();
+        } catch {}
+    } else if (buzzCtx) {
+        try { buzzCtx.suspend(); } catch {}
+    }
+});
+
 // WS2812 strip decoder: the firmware bit-bangs 800kHz WS2812 frames over
 // SPI1 at 2.25MHz (div32) — each WS2812 bit = 3 SPI bits (0b110 = 1, 0b100 = 0),
 // 24 bits/LED, GRB byte order, 8 LEDs = 72 SPI bytes per frame. DMA1 CH3 pushes
 // the bytes straight into SPI1 DR, so onPeriphWrite is the only tap that sees
 // them (processDma feeds the watchers per pushed byte like real hardware).
+// NOTE: wsBuf/wsLeds/wsFrames are declared here (after buzzAudio) but used
+// inside initEmulator above — safe because initEmulator only RUNS on user
+// clicks, long after this whole script has executed (const hoisting TDZ
+// applies at execution time, not parse time).
 const WS_SPI_DR = 0x4001300C;
 const wsBuf = [];
 const wsLeds = Array.from({ length: 8 }, () => ({ r: 0, g: 0, b: 0 }));
@@ -1114,6 +1165,9 @@ function pollUart() {
                 }
             }
             if (stick) terminal.scrollTop = terminal.scrollHeight;
+            // Buzzer beep follows the firmware's own t=Ns tick line
+            // (PB14 is held high 200ms per emulated second).
+            if (/^t=\d+s btn=\d+ rg=[0-9A-F]{6} buzz=1/m.test(txt)) buzzAudio(true);
         }
     } catch (e) {}
 }
@@ -1149,6 +1203,25 @@ async function initEmulator(data, name, extDevices = {}, needsMainThread = false
     $('wsCard').hidden = true;
     $('usbCard').hidden = true;
     $('i2cCard').hidden = true;
+    // Fresh boot, fresh terminal: stale lines from the previous firmware
+    // (echo banners, old t=Ns ticks) otherwise interleave with the new run
+    // and confuse autopilot SUMMARY matching + human reading.
+    terminal.innerHTML = '';
+    wsBuf.length = 0; wsFrames = 0;
+    wsLeds.forEach(led => { led.r = led.g = led.b = 0; });
+    segDigits = [0x3F, 0x3F, 0x3F, 0x3F]; segNeed = 0; segFrame = [];
+    try {
+        const oledCv = $('oledCanvas'), oledCtx = oledCv && oledCv.getContext('2d');
+        if (oledCtx) oledCtx.clearRect(0, 0, 128, 64);
+        const lcdCv = $('lcdCanvas'), lcdCtx = lcdCv && lcdCv.getContext('2d');
+        if (lcdCtx) lcdCtx.clearRect(0, 0, 128, 64);
+    } catch {}
+    $('segHost').innerHTML = '';
+    ['rgb-r', 'rgb-g', 'rgb-b'].forEach(id => { const el = $(id); if (el) { el.style.background = ''; el.classList.remove('on'); } });
+    $('buzz-ind')?.classList.remove('on');
+    buzzAudio(null);
+    document.querySelectorAll('.ws-led').forEach(el => el.style.background = '#1e293b');
+    if ($('wsFrameCount')) $('wsFrameCount').textContent = '0 frames';
     $('usbEchoInput').disabled = true;
     $('usbEchoBtn').disabled = true;
     $('usbStatus').textContent = 'not enumerated';
@@ -1189,15 +1262,12 @@ async function initEmulator(data, name, extDevices = {}, needsMainThread = false
         // autoBytes for periph_test autopilot
         const ab = (name.includes('periph_test') || name.includes('arduino_periph_test')) ? [0x41, 0x42] : [];
         worker.postMessage({ type: 'init', firmware: data, chip, svd: svdForWorker, ext_devices: extDevices, autoBytes: ab, canFlagAddr, usbListen: !!opts.usbListen, hostTrace: !!opts.hostTrace, uartAddr: opts.uartAddr || 0, symbols: symbolsData || undefined });
-        // Try OffscreenCanvas transfer for showcase (worker renders directly, no copy)
-        try {
-          if (typeof OffscreenCanvas !== 'undefined' && $('oledCanvas')?.transferControlToOffscreen) {
-            const oledOff = $('oledCanvas').transferControlToOffscreen();
-            const lcdOff = $('lcdCanvas').transferControlToOffscreen();
-            worker.postMessage({ type: 'initCanvas', oled: oledOff, lcd: lcdOff }, [oledOff, lcdOff]);
-          }
-        } catch {}
-
+        // NOTE: no OffscreenCanvas transfer here. It permanently detaches the
+        // 2D context from these canvas elements, so once ANY firmware load
+        // steals them, every later showcase run renders into a dead canvas
+        // (getContext throws, OLED/LCD stay black across reloads). The worker
+        // already snapshots the framebuffers into each 'frame' message, and
+        // the main thread draws them below — same pixels, no theft.
         // UI enabled on worker 'ready' message
         $('runBtn').disabled = true;
         $('stopBtn').disabled = true;

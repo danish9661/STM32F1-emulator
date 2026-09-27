@@ -297,7 +297,8 @@ select:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 .periph-dev h4 { font-size: 12px; color: var(--dim); margin-bottom: 8px; font-weight: 700; }
 .periph-dev canvas {
   display: block; background: #000; image-rendering: pixelated;
-  width: 100%; border-radius: 4px; border: 1px solid var(--line);
+  width: 100%; border-radius: 4px; border: 2px solid var(--amber);
+  outline: 1px solid var(--line-soft); outline-offset: 2px;
 }
 .displays { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 #seg-svg { width: 100%; }
@@ -320,6 +321,7 @@ select:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 }
 #buzz-ind.on { border-color: var(--amber); color: var(--amber); background: var(--amber-soft); animation: buzzPulse 0.3s ease infinite alternate; }
 @keyframes buzzPulse { from { transform: scale(1); } to { transform: scale(1.08); } }
+#buzz-mute { margin-left: 10px; font-size: 11px; padding: 6px 12px; vertical-align: middle; }
 #btn-widget { width: 100%; padding: 10px; font-size: 13px; font-weight: 600; border-radius: 6px; }
 #btn-widget:active { background: var(--amber-soft); }
 
