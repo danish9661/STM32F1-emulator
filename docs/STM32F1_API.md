@@ -51,9 +51,13 @@ const mcu = await STM32F1.fromELF(elf, {
 });
 ```
 
-Instance methods: `execute(cycles) -> {instCount, stopped}`, `step(cycles)` (respects `batch_size` / adaptive 20K/50K, `pkg/emulator.js:698`),
+Instance methods: `execute(cycles) -> {totalSteps, instCount, stopped}`, `step(cycles)` (respects `batch_size` / adaptive 20K/50K, `pkg/emulator.js:698`),
 `stop()`, `close()`, `reset()`, `loadELF/loadBin/loadHex(buf)`, `uartRx(byte)`,
 `uartOutput`, `onPeriphWrite(fn)`, `setSymbols(text)`, `resolveSymbol(pc)`.
+`execute()` runs long runs as `getBatchSize()`-chunked `step()`s with the
+transfer-event drain after every batch, so each batch's GPIO pin changes land
+before that batch's transfer callbacks (a CS sampled in `onTransfer` is fresh
+as of that transfer); `execute(0/neg)` keeps legacy run()-once semantics.
 
 ## Clocks, power, debug helpers (low-level `emu.*` passthroughs)
 
@@ -119,6 +123,42 @@ mcu.usart2.send('AT+RST\r\n');
 
 // Read all USART1 output accumulated so far
 console.log(mcu.usart1.output);
+```
+
+## ADC inject
+
+- `mcu.adc1` / `adc2` / `adc3` (also `mcu.adc[1..3]`).
+- `adc.setVoltage(ch, millivolts)` drives a target voltage (0..3300 mV at
+  VREF=3.3V) into the channel the converter samples — the host side of
+  `analogRead`-style firmware. Channels 0-15 route to the mapped GPIO pin
+  analog wire (PA0-7, PB0-1, PC0-5, same table the model samples through its
+  RC sample-and-hold); 16-18 (temp/VREF/VBAT) use the internal override;
+  higher channels fall back to the global sim value.
+- `adc.setCode(ch, code)` drives a raw 12-bit code (0..4095) via the same routing.
+- Completion is observed via `mcu.onAdcDone = (adc, ch) => …`.
+
+```js
+// Hold PA0 (ADC1 channel 0) at mid-scale ≈ 1.65 V, then run the firmware
+mcu.adc1.setVoltage(0, 1650);
+mcu.onAdcDone = (adc, ch) => console.log(`ADC${adc} ch${ch} done`);
+await mcu.execute(1_000_000);
+
+// Raw-code form (e.g. full-scale on the temp sensor channel)
+mcu.adc1.setCode(16, 4095);
+```
+
+## TIM / PWM observe
+
+- `mcu.tim1` … `mcu.tim7` (also `mcu.tim[1..7]`).
+- `tim.duty(ch)` → output duty 0..100 for channel `ch` (0-based), from the
+  model's CCR/ARR state; `tim.frequency()` → output rate in Hz from PSC/ARR
+  and the RCC clock tree (APB x2 rule included). Both report 0 unless the
+  counter runs (CR1 CEN) — a stopped timer has no output.
+- Update/overflow edges are observed via `mcu.onTimUpdate = (tim) => …`.
+
+```js
+// Read back the servo PWM the firmware programs on TIM3 CH1 (PA6)
+console.log('duty:', mcu.tim3.duty(0), 'freq:', mcu.tim3.frequency(), 'Hz');
 ```
 
 ## Virtual-peripheral events (Wokwi-style)

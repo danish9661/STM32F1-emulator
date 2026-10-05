@@ -221,6 +221,23 @@ const pin = mcu.gpio.pin('A', 5);  // or mcu.gpio.pin(0, 5)
 | `i2c.onStop = () => {}` | Stop condition callback |
 | `i2c.injectRx([0x55, ...])` | Queue RX bytes for next read |
 
+### ADC
+
+| Property / Method | Description |
+|---|---|
+| `mcu.adc1` / `adc2` / `adc3` | ADC wrappers (`mcu.adc[1..3]` too) |
+| `adc.setVoltage(ch, mV)` | Drive target voltage 0..3300 mV into channel `ch` (VREF=3.3V) |
+| `adc.setCode(ch, code)` | Drive raw 12-bit code 0..4095 (same routing: pins 0-15, internal 16-18, sim fallback) |
+
+### TIM
+
+| Property / Method | Description |
+|---|---|
+| `mcu.tim1` … `mcu.tim7` | Timer wrappers (`mcu.tim[1..7]` too) |
+| `tim.duty(ch)` | Output duty 0..100 for channel `ch` (0-based), 0 unless CR1 CEN |
+| `tim.frequency()` | Output rate in Hz from PSC/ARR + live RCC tree, 0 unless CR1 CEN |
+| `tim.enabled()` | True while the counter runs (CR1 CEN) |
+
 ### Virtual-Peripheral Events
 
 These callbacks fire on specific hardware events:

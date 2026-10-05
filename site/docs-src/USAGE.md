@@ -47,6 +47,7 @@ emu.dmaQueueCount(); emu.dmaQueuePeek(); // raw queue depth + descriptors (peek 
 emu.dmaPump();           // one manual DMA pump (normally automatic per batch)
 emu.dmaTakeAbsorbed(off, len); // periph→mem bytes from the last pump
 emu.dmaCompleteMany(bits); // signal stream completion (TC IRQs when TCIE armed)
+emu.getBatchSize(); emu.getInstCount(); // configured batch size (default 20000) + cumulative instruction counter (exact run accounting)
 emu.irqPending(); emu.irqNext(); emu.irqReturn(); emu.irqFinish(irq); // raw IRQ take/return (every irqNext pairs with a return)
 emu.rccSysclkHz(); emu.rccClocksHz(); emu.rccMcoHz(); emu.rccFailHse(); // clock tree + HSE failure
 emu.pwrSetSupplyMv(mv);  // PVD rail in mV (default 3300); returns PVDO (below-threshold)

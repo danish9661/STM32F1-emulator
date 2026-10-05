@@ -78,6 +78,39 @@ export class I2C {
   injectRx(bytes: Uint8Array | number[]): void;
 }
 
+// ── ADC ─────────────────────────────────────────────────────────────────────
+
+// An ADC (ADC1..3). Injection drives the target voltage the converter samples.
+
+export class ADC {
+  readonly n: 1 | 2 | 3;  // ADC number
+
+  constructor(mcu: STM32F1, n: 1 | 2 | 3);
+
+  /** Drive a target voltage into a channel (millivolts, 0..3300 at VREF=3.3V). */
+  setVoltage(ch: number, millivolts: number): void;
+  /** Drive a raw 12-bit code (0..4095) into a channel. */
+  setCode(ch: number, code: number): void;
+}
+
+// ── TIM ─────────────────────────────────────────────────────────────────────
+
+// A general-purpose timer (TIM1..7) for PWM/servo/LED/buzzer observation.
+
+export class TIM {
+  readonly n: number;  // timer number 1..7
+  readonly base: number;  // peripheral base address
+
+  constructor(mcu: STM32F1, n: number);
+
+  /** True while the counter runs (CR1 CEN). */
+  enabled(): boolean;
+  /** Output duty 0..100 for channel ch (0-based). 0 unless the timer runs. */
+  duty(ch?: number): number;
+  /** Output frequency in Hz from PSC/ARR and the clock tree. 0 unless the timer runs. */
+  frequency(): number;
+}
+
 // ── DMA ─────────────────────────────────────────────────────────────────────
 
 export class DMA {
@@ -135,6 +168,20 @@ export class STM32F1 {
   readonly dma1: DMA;
   readonly dma2: DMA;
   readonly dma: { 1: DMA; 2: DMA };
+
+  readonly adc1: ADC;
+  readonly adc2: ADC;
+  readonly adc3: ADC;
+  readonly adc: { 1: ADC; 2: ADC; 3: ADC };
+
+  readonly tim1: TIM;
+  readonly tim2: TIM;
+  readonly tim3: TIM;
+  readonly tim4: TIM;
+  readonly tim5: TIM;
+  readonly tim6: TIM;
+  readonly tim7: TIM;
+  readonly tim: { 1: TIM; 2: TIM; 3: TIM; 4: TIM; 5: TIM; 6: TIM; 7: TIM };
 
   // ── Top-level event callbacks (set directly on instance) ───────────────────
 

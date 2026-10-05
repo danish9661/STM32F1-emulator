@@ -27,6 +27,19 @@ import { createEmulator, parseElf, parseIntelHex, parseSymbolMap } from './emula
 const USART_DR = { 1: 0x40013804, 2: 0x40004404, 3: 0x40004804 };
 /** GPIO port letter -> internal index (A=0 .. G=6), matching gpioReadOutput(). */
 const PORT_INDEX = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6 };
+/** ADC channel -> GPIO pin for target-voltage injection (mirrors adc.rs channel_pin). */
+const ADC_CHANNEL_PIN = { 8: [1, 0], 9: [1, 1] };
+for (let ch = 0; ch <= 7; ch++) ADC_CHANNEL_PIN[ch] = [0, ch];
+for (let ch = 10; ch <= 15; ch++) ADC_CHANNEL_PIN[ch] = [2, ch - 10];
+/** VREF for ADC millivolt <-> 12-bit code conversion (VDDA = 3.3 V nominal). */
+const ADC_VREF_MV = 3300;
+/** TIM number -> base address (RM0008; mirrors tim.rs timer_base). */
+const TIM_BASE = {
+    1: 0x40012C00, 2: 0x40000000, 3: 0x40000400, 4: 0x40000800,
+    5: 0x40000C00, 6: 0x40001000, 7: 0x40001400,
+};
+/** RCC_CFGR for the APB prescaler (timer-clock x2 rule). */
+const RCC_CFGR = 0x40021004;
 
 /**
  * A single GPIO pin. Subscribe to output-level changes, read the level, or drive
@@ -183,6 +196,77 @@ export class DMA {
 }
 
 /**
+ * An ADC (ADC1: 12 channels incl. internal, ADC2/ADC3 similar). Injection
+ * drives the target voltage the converter samples — the host side of
+ * `analogRead`-style firmware: set a voltage, run the firmware, read DR.
+ * Completion is observed via `mcu.onAdcDone(adc, chan)`.
+ */
+export class ADC {
+    /** @param {STM32F1} mcu @param {1|2|3} n ADC number */
+    constructor(mcu, n) {
+        this._mcu = mcu;
+        this.n = n;
+    }
+    /**
+     * Drive a target voltage into a channel (millivolts, 0..3300 at VREF=3.3V).
+     * Channels 0-15 route to the mapped GPIO pin analog wire (same source the
+     * converter samples, through the RC sample-and-hold); 16-18 (temp/VREF/VBAT)
+     * use the internal override; higher channels fall back to the global sim value.
+     */
+    setVoltage(ch, millivolts) {
+        const code = Math.max(0, Math.min(4095, Math.round((millivolts / ADC_VREF_MV) * 4095)));
+        return this.setCode(ch, code);
+    }
+    /** Drive a raw 12-bit code (0..4095) into a channel (same routing as setVoltage). */
+    setCode(ch, code) {
+        const c = ch | 0;
+        code = Math.max(0, Math.min(4095, code | 0));
+        if (ADC_CHANNEL_PIN[c]) {
+            const [port, pin] = ADC_CHANNEL_PIN[c];
+            this._mcu._emu.gpioSetAnalog(port, pin, code);
+        } else if (c >= 16 && c <= 18) {
+            this._mcu._emu.adcSetInternal(c, code);
+        } else {
+            this._mcu._emu.setSimAdc(code);
+        }
+    }
+}
+
+/**
+ * A general-purpose timer (TIM1-7) for PWM/servo/LED/buzzer observation.
+ * `duty(ch)` reads the model's CCR/ARR-derived duty (0-100); `frequency()`
+ * derives the output rate from PSC/ARR and the RCC clock tree (APB x2 rule).
+ * Both report 0 unless the counter runs (CR1 CEN) — a stopped timer has no output.
+ */
+export class TIM {
+    /** @param {STM32F1} mcu @param {number} n timer number 1..7 */
+    constructor(mcu, n) {
+        this._mcu = mcu;
+        this.n = n;
+        this.base = TIM_BASE[n];
+    }
+    /** True while the counter runs (CR1 CEN). */
+    enabled() { return (this._mcu._emu.periphRead(this.base, 4) & 1) !== 0; }
+    /** Output duty 0..100 for channel ch (0-based). 0 unless the timer runs. */
+    duty(ch = 0) { return this.enabled() ? this._mcu._emu.pwmDuty(this.base, ch) : 0; }
+    /** Output frequency in Hz from PSC/ARR and the clock tree. 0 unless the timer runs. */
+    frequency() {
+        if (!this.enabled()) return 0;
+        const emu = this._mcu._emu;
+        const psc = emu.periphRead(this.base + 0x28, 4) & 0xFFFF;
+        const arr = emu.periphRead(this.base + 0x2C, 4) & 0xFFFF;
+        const clocks = emu.rccClocksHz(); // [sysclk, hclk, pclk1, pclk2]
+        const cfgr = emu.periphRead(RCC_CFGR, 4);
+        const apb1 = this.n !== 1; // TIM1 is APB2; TIM2-7 are APB1
+        const ppre = apb1 ? (cfgr >>> 8) & 7 : (cfgr >>> 11) & 7;
+        const pclk = apb1 ? clocks[2] : clocks[3];
+        // RM0008: when the APB prescaler is not /1, the timer clock is 2x PCLK.
+        const timerClk = (ppre & 0x4) ? pclk * 2 : pclk;
+        return Math.round(timerClk / ((psc + 1) * (arr + 1)));
+    }
+}
+
+/**
  * High-level STM32F1 emulator. Wrap it around a firmware image and drive it like
  * rp2040js / avr8js.
  */
@@ -206,6 +290,14 @@ export class STM32F1 {
         this.i2c1 = this.i2c[1]; this.i2c2 = this.i2c[2]; this.i2c3 = this.i2c[3];
         this.dma = { 1: new DMA(this, 1), 2: new DMA(this, 2) };
         this.dma1 = this.dma[1]; this.dma2 = this.dma[2];
+        this.adc = {};
+        for (let n = 1; n <= 3; n++) this.adc[n] = new ADC(this, n);
+        this.adc1 = this.adc[1]; this.adc2 = this.adc[2]; this.adc3 = this.adc[3];
+        this.tim = {};
+        for (let n = 1; n <= 7; n++) this.tim[n] = new TIM(this, n);
+        this.tim1 = this.tim[1]; this.tim2 = this.tim[2]; this.tim3 = this.tim[3];
+        this.tim4 = this.tim[4]; this.tim5 = this.tim[5]; this.tim6 = this.tim[6];
+        this.tim7 = this.tim[7];
         /** EXTI line edge callback: onExtiEdge(line) */
         this.onExtiEdge = null;
         /** ADC conversion-complete callback: onAdcDone(adc, chan) */
@@ -371,6 +463,9 @@ export class STM32F1 {
     async _reload(opts) {
         this._pinUnsub?.(); this._pinUnsub = null;
         this._pinListeners.clear();
+        // Reset clears everything, synchronously: drop the accumulated
+        // per-USART TX buffers too, so post-reset output starts clean.
+        for (const k of Object.keys(this.usart)) this.usart[k]._buf.length = 0;
         const emu = await createEmulator(opts);
         this._emu = emu;
         this._opts = opts;
@@ -379,14 +474,36 @@ export class STM32F1 {
     }
 
     /**
-     * Run `cycles` instructions. Resolves to { instCount, stopped }.
+     * Run `cycles` instructions, draining virtual-peripheral events once per
+     * batch. Each batch's GPIO pin changes (drained inside step()) are
+     * delivered BEFORE that batch's bus-transfer events below — so a CS
+     * sampled inside `onTransfer` observes the level as of that transfer,
+     * not the end of the whole run. Transfer/edge counts are unchanged vs
+     * a single `run()`: the same batches execute, only callback timing moves
+     * earlier (per batch instead of post-run).
+     * Resolves to { totalSteps, instCount, stopped }.
      * @param {number} cycles
-     * @returns {Promise<{instCount:number, stopped:boolean}>}
+     * @returns {{totalSteps:number, instCount:number, stopped:boolean}}
      */
     execute(cycles) {
-        const r = this._emu.run(cycles);
-        this._drain_events();
-        return r;
+        if (!(cycles > 0)) {
+            // Degenerate path (0/negative/NaN): legacy run()-once semantics.
+            const r = this._emu.run(cycles);
+            this._drain_events();
+            return r;
+        }
+        const chunk = this._emu.getBatchSize() || 20000;
+        const startInst = this._emu.getInstCount();
+        let totalSteps = 0, instCount = startInst, stopped = false;
+        while (instCount - startInst < cycles && !stopped) {
+            const r = this._emu.step(Math.min(chunk, cycles - (instCount - startInst)));
+            totalSteps++;
+            instCount = r.instCount;
+            stopped = r.stopped;
+            this._drain_events();
+            if (stopped) break;
+        }
+        return { totalSteps, instCount, stopped };
     }
     /** Single batch step. @param {number} cycles */
     step(cycles) { const r = this._emu.step(cycles); this._drain_events(); return r; }

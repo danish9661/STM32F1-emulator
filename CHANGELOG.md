@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.3.0] — 2026-10-05 — ADC + TIM wrapper classes, per-batch event ordering
+
+### Added
+- `ADC` wrapper class (`mcu.adc1..3`, also `mcu.adc[1..3]`):
+  `setVoltage(ch, mV)` (0..3300 at VREF=3.3V) / `setCode(ch, code)` — ch 0-15
+  route to the mapped GPIO pin analog wire (the exact source the converter
+  samples, through the RC sample-and-hold), 16-18 use the internal override,
+  higher channels fall back to the global sim value. Completion observed via
+  the existing `onAdcDone`. Reference: `docs/STM32F1_API.md` ("ADC inject"),
+  README, Guide §8.5.
+- `TIM` wrapper class (`mcu.tim1..7`, also `mcu.tim[1..7]`): `duty(ch)`
+  (0-100 from CCR/ARR) + `frequency()` (PSC/ARR + live RCC tree incl. the APB
+  x2 rule), both 0 unless CR1 CEN. Reference: `docs/STM32F1_API.md`
+  ("TIM / PWM observe"), README, Guide §8.5.
+- Emulator batch introspection (`pkg/emulator.js` + `.d.ts`): `getBatchSize()`
+  (configured batch size, default 20000) + `getInstCount()` (cumulative
+  retired-instruction counter).
+
+### Fixed
+- GPIO/transfer event ordering (`stm32f1-emu.md` optional improvement):
+  `STM32F1.execute()` now runs long runs as `getBatchSize()`-chunked `step()`s
+  with the transfer-event drain after every batch, so each batch's GPIO pin
+  changes land before that batch's transfer callbacks — a CS sampled inside
+  `onTransfer` observes the level as of that transfer, not the end of the run.
+  Transfer/edge counts are unchanged (proven bit-identical on both drain
+  paths); `execute(0/neg)` keeps legacy run()-once semantics; the return shape
+  (`{totalSteps, instCount, stopped}`) is unchanged.
+- `STM32F1` reload/reset now also clears the accumulated per-USART TX buffers
+  (previously pin listeners only), so no wrapper-level state survives a reset.
+
+### Tests
+- `tests/test_stm32f1_api.mjs` 23/23 (was 9): ADC inject end-to-end
+  (1650 mV → DR=2048 + EOC + `onAdcDone`), TIM observe (duty 25 / live-tree
+  9 kHz + `onTimUpdate`), reset-clears-buffers, per-step `instCount`.
+- New `tests/test_stm32f1_ordering.mjs` 9/9 (wired into CI): register-driven
+  CS-freshness with zero instructions retired, plus a firmware-driven
+  differential (showcase LCD paint, CS PA8) — the per-batch path observes
+  selected-CS mid-run where the legacy drain-once path saw only the end
+  state, with transfer/edge counts bit-identical (16396 / 5).
+- `tests/test_all.mjs` 772/772 (no model changes in this release).
+
 ## [3.2.0] — 2026-09-26 — DMA + clocks/power/debug JS surface, watchdog proofs, repo rename
 
 ### Added

@@ -76,6 +76,62 @@ mcu.step(5000);
 ok(usbIn && usbIn[0] === 0 && usbIn[1].join(',') === '160,161,162,163',
     'onUsbIn dispatched with PMA buffer bytes');
 
+// ADC inject + TIM observe surface exists
+ok(mcu.adc1 && mcu.adc2 && mcu.adc3, 'adc1/2/3 exist');
+ok(mcu.tim1 && mcu.tim2 && mcu.tim3, 'tim1/2/3 exist');
+
+// Reset clears everything, synchronously: accumulated USART TX buffers
+// must not leak across the reload (multi-board lockstep contract).
+ok(tx.length > 0, 'sanity: ws2812 run produced TX bytes before reset');
+await mcu.reset();
+ok(mcu.usart1._buf.length === 0, 'reset clears accumulated USART TX buffers');
+
+// ADC inject end-to-end on the fresh emulator: hold PA0 (ADC1 ch0) at
+// 1650 mV -> code 2048, convert via registers, read DR back.
+const A1 = 0x40012400;
+mcu._emu.periphWrite(0x40021018, 4, 1 << 9); // APB2ENR: ADC1EN
+mcu._emu.adcSetRcTau(1); // settle instantly for exact readback
+let adcDone = null;
+mcu.onAdcDone = (adc, ch) => { adcDone = [adc, ch]; };
+mcu.adc1.setVoltage(0, 1650);
+mcu._emu.periphWrite(A1 + 0x08, 4, 1); // ADON
+mcu._emu.periphWrite(A1 + 0x08, 4, 1 | (1 << 22)); // ADON + SWSTART
+mcu.step(5000);
+ok((mcu._emu.periphRead(A1, 4) & 2) === 2, 'ADC EOC after injected conversion');
+ok((mcu._emu.periphRead(A1 + 0x4C, 4) & 0xFFF) === 2048, 'ADC DR matches injected 1650mV');
+ok(adcDone && adcDone[0] === 1 && adcDone[1] === 0, 'onAdcDone fired for ADC1 ch0');
+
+// TIM observe end-to-end: TIM2 at PSC=7/ARR=999/CCR1=250 on the default
+// 8 MHz HSI tree -> 1 kHz at 25% duty; UIE arms the update event.
+mcu._emu.periphWrite(0x4002101C, 4, 1 << 0); // APB1ENR: TIM2EN
+const T2 = 0x40000000;
+mcu._emu.periphWrite(T2 + 0x28, 4, 7); // PSC
+mcu._emu.periphWrite(T2 + 0x2C, 4, 999); // ARR
+mcu._emu.periphWrite(T2 + 0x34, 4, 250); // CCR1
+mcu._emu.periphWrite(T2 + 0x18, 4, (0b110 << 4) | (1 << 3)); // OC1M=PWM1, OC1PE
+mcu._emu.periphWrite(T2 + 0x20, 4, 1); // CCER: CC1E
+mcu._emu.periphWrite(T2 + 0x0C, 4, 1); // DIER: UIE
+mcu._emu.periphWrite(T2 + 0x00, 4, 1); // CR1: CEN
+let timUpd = null;
+mcu.onTimUpdate = (t) => { timUpd = t; };
+mcu.step(20000);
+ok(mcu.tim2.enabled() === true, 'tim2.enabled() reflects CEN');
+ok(mcu.tim2.duty(0) === 25, 'tim2.duty(0) reads programmed 25%');
+// NOTE: the ws2812 firmware brought up PLL 72 MHz with PPRE1=/2 while we were
+// stepping, so the live TIM2 clock is 2x36 = 72 MHz (APB x2 rule):
+// 72e6 / ((7+1) * (999+1)) = 9000 Hz. frequency() follows the LIVE tree.
+const livePclk1 = mcu._emu.rccClocksHz()[2];
+ok(livePclk1 === 36000000, `live PCLK1 is PLL/2 (${livePclk1})`);
+ok(mcu.tim2.frequency() === 9000, 'tim2.frequency() derives 9kHz from live PSC/ARR/clocks');
+ok(timUpd === 2, 'onTimUpdate fired for TIM2');
+ok(mcu.tim3.enabled() === false && mcu.tim3.frequency() === 0 && mcu.tim3.duty(0) === 0,
+    'stopped timer observes duty/frequency as 0');
+
+// Cycle/instruction counter per step (sim-time edge stamps + pace accounting).
+const rr = mcu.step(100);
+ok(rr && typeof rr.instCount === 'number' && typeof rr.pc === 'number',
+    'step() exposes pc + instruction counter');
+
 console.log(`stm32f1 api: ${done} instructions in ${elapsed}s, usart1 bytes=${tx.length}, spi1 transfers=${spiCount}`);
 console.log(`\nResults: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed === 0 ? 0 : 1);

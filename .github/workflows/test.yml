@@ -197,6 +197,8 @@ jobs:
         run: node tests/test_can_dual.mjs
       - name: STM32F1 wrapper API (ergonomic class over emulator.js)
         run: node tests/test_stm32f1_api.mjs
+      - name: STM32F1 GPIO/transfer ordering (per-batch event interleave)
+        run: node tests/test_stm32f1_ordering.mjs
       - name: I2C/SPI/USART virtual-peripheral event queue
         run: node tests/test_i2c_events.mjs
       - name: TIM/ADC virtual-peripheral events (extended queue)

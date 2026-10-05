@@ -1,4 +1,4 @@
-# STM32F1 Emulator — User Guide (`stm32f1-emu@3.2.0`)
+# STM32F1 Emulator — User Guide (`stm32f1-emu@3.3.0`)
 
 Full-system emulation of the **STM32F1 family** (STM32F103C8 "Blue Pill",
 STM32F105, GD32F103, Maple Mini, Nucleo-F103RB, …) in **one WASM module**
@@ -39,7 +39,7 @@ other toolchains — **without modification**:
 
 | Metric | Value |
 |---|---|
-| Package | `stm32f1-emu@3.2.0`, ESM, Node ≥ 18 |
+| Package | `stm32f1-emu@3.3.0`, ESM, Node ≥ 18 |
 | Rust sources | `src/` (~60 files: cpu, peripherals, ext_devices, bus, system) |
 | JS surface | `pkg/emulator.js` + `pkg/stm32f1.js` + `pkg/gdbstub.mjs` + `pkg/ws-server.mjs` + `pkg/cli.mjs` |
 | Test suite | `tests/test_all.mjs` **772 asserts**, `tests/canary.mjs` 39/39 firmware checks, ~50 suites |
@@ -1129,15 +1129,15 @@ stdin UART by name/address).
 | Layer | Import | Role |
 |---|---|---|
 | Raw WASM | `pkg/stm32_bluepill_wasm.js` (+ `_bg.wasm`) | 122 wasm-bindgen exports — do not call directly (`emulator.js` owns init/batch policy) |
-| Low-level bridge | `stm32f1-emu/emulator` (`pkg/emulator.js`) | `createEmulator()` + 84-method handle: run/step, CPU, UART, GPIO, DMA, events, injects, debug, bus tap |
-| Ergonomic wrapper | `stm32f1-emu` (`pkg/stm32f1.js`) | `STM32F1` class: GPIO/USART/SPI/I2C/DMA objects + 17 top-level event callbacks, auto-drain per batch |
+| Low-level bridge | `stm32f1-emu/emulator` (`pkg/emulator.js`) | `createEmulator()` + 116-method handle: run/step, CPU, UART, GPIO, DMA, events, injects, debug, bus tap |
+| Ergonomic wrapper | `stm32f1-emu` (`pkg/stm32f1.js`) | `STM32F1` class: GPIO/USART/SPI/I2C/DMA/ADC/TIM objects + 17 top-level event callbacks, auto-drain per batch |
 | GDB stub | `stm32f1-emu/gdb` (`pkg/gdbstub.mjs`) | `serveGdb()` → RSP over TCP (§3.4, §9.1) |
 | CLI | `stm32f1-emu` / `bluepill-emu` bins (`pkg/cli.mjs`) | Headless runs (§3.1–§3.3) |
 | WS server | `pkg/ws-server.mjs` (needs `ws` dep) | Headless + browser viewer (§3.5, §10.3) |
 
 ## 8.1 Package layout
 
-`stm32f1-emu@3.2.0`, ESM, Node ≥ 18. Exports: `.` → `pkg/stm32f1.js`,
+`stm32f1-emu@3.3.0`, ESM, Node ≥ 18. Exports: `.` → `pkg/stm32f1.js`,
 `./emulator` → `pkg/emulator.js`, `./gdb` → `pkg/gdbstub.mjs`,
 `./wasm` → raw glue, `./cli` → `pkg/cli.mjs`; bins `stm32f1-emu` /
 `bluepill-emu`. Files: bridge + wrapper + WASM + GDB + CLI + WS server
@@ -1148,13 +1148,19 @@ directly — `emulator.js` owns init/batch policy).
 
 Factories `create/fromELF/fromBin/fromHex`; `loadELF/loadBin/loadHex/
 _reload/reset`; `execute/step/stop/close`; `_drain_events` per batch
-(discriminants 1–22). `gpio.pin('A'..'G'|0..6, 0..15)` →
+(discriminants 1–22). `execute()` splits long runs into
+`getBatchSize()`-chunked `step()`s with the transfer drain after every batch, so each
+batch's GPIO pin changes land before that batch's transfer callbacks (a CS sampled in
+`onTransfer` is fresh as of that transfer); reset/load paths clear the accumulated
+per-USART TX buffers too, so no wrapper state survives a reset. `gpio.pin('A'..'G'|0..6, 0..15)` →
 `{ on('change')→unsub, read/readInput/setInput/setAnalog }`;
 `usart1/2/3` → `{ onData/send/output }` (+ USART1 shortcuts
 `uartRx/uartOutput`); `spi1..3` → `{ onTransfer/injectMiso }`;
 `i2c1..3` → `{ onStart/onWrite/onRead/onStop/injectRx }`;
 `dma1/dma2` (`dma[1..2]`) → `{ isr/getCcr/getNdtr/getPar/getMar/
-setChannel/clearFlags/pending }` (see §8.4); top-level
+setChannel/clearFlags/pending }` (see §8.4); `adc1..3` (`adc[1..3]`) →
+`{ setVoltage/setCode }` and `tim1..7` (`tim[1..7]`) → `{
+enabled/duty/frequency }` (see §8.5); top-level
 `onExtiEdge/onAdcDone/onTimUpdate/onDacWrite/onCrcResult/onRtcAlarm/
 onWdogReset/onCanTx/onCanRx/onTimCapture/onFsmcAccess/onUsbIn/
 onI2cAlert/onHostTx/onHostRx/onItmByte`; `onPeriphWrite/setSymbols/
@@ -1165,11 +1171,11 @@ resolveSymbol/fsmcWriteByte/fsmcReadByte`; re-exports
 
 `createEmulator({ firmware, flash_size?, ram_size?, vector_table?,
 svd?, chip?, js_peripherals?, uart_addr?, ext_devices?, verbose?,
-batch_size? }) → BluepillEmulator` (84 methods — all of §8.2's
+batch_size? }) → BluepillEmulator` (116 methods — all of §8.2's
 underlying calls plus `run/step/stop/close/reset/setBoot0/getBoot0/
 boardInfo/getRegisters/getPc/getSp/setReg/setPc/read32/write32/
 memRead32/memWriteBytes/takeFault/swd*/jtag*/periphRead/periphWrite/
-addJsPeripheral` and every inject). `CHIPS` (8) + `chipInfo()`.
+addJsPeripheral/getBatchSize/getInstCount` and every inject). `CHIPS` (8) + `chipInfo()`.
 `ext_devices`: `spi_flash/i2c_eeprom/i2c_oled/lcd/touchscreen/
 software_spi/fsmc_bank ({name,data}|{name,size})/sd_card`.
 
@@ -1191,7 +1197,34 @@ MSIZE=10-11 PL=12-13 M2M=14`; TCIF at `(N-1)*4+1`; every `irqNext()`
 pairs with a return. Worked M2M example in `docs/STM32F1_API.md`
 ("DMA").
 
-## 8.5 Servers and debug
+## 8.5 ADC + TIM API (new in 3.3.0)
+
+`mcu.adc1..3` (also `mcu.adc[1..3]`) inject the target voltage the converter
+samples — the host side of `analogRead`-style firmware: `setVoltage(ch,
+millivolts)` (0..3300 at VREF=3.3V) / `setCode(ch, code)` (raw 12-bit).
+Channels 0-15 route to the mapped GPIO pin analog wire (PA0-7, PB0-1, PC0-5 —
+the exact source the model samples through its RC sample-and-hold), 16-18
+(temp/VREF/VBAT) use the internal override, higher channels fall back to the
+global sim value. Completion is observed via `onAdcDone(adc, chan)`.
+
+`mcu.tim1..7` (also `mcu.tim[1..7]`) observe PWM/servo/LED/buzzer outputs:
+`duty(ch)` (0-100 from CCR/ARR) + `frequency()` (PSC/ARR + live RCC tree
+incl. the APB x2 rule) — both 0 unless CR1 CEN. Update edges arrive via
+`onTimUpdate(tim)`.
+
+```js
+mcu.adc1.setVoltage(0, 1650);   // hold PA0 at mid-scale…
+await mcu.execute(1_000_000);   // …run the firmware, read DR back
+console.log(mcu.tim3.duty(0), mcu.tim3.frequency()); // servo PWM readback
+```
+
+`execute()` splits long runs into `getBatchSize()`-chunked `step()`s with the
+transfer-event drain after every batch, so each batch's GPIO pin changes land
+before that batch's transfer callbacks (a CS sampled in `onTransfer` is fresh
+as of that transfer). Batch introspection lives on the low level:
+`emu.getBatchSize()` (default 20000) + `emu.getInstCount()` (cumulative).
+
+## 8.6 Servers and debug
 
 `serveGdb({...}) → {port,emu,close}` (see §3.4); `pkg/cli.mjs` (§3.1–
 3.3); `pkg/ws-server.mjs` (§3.5); `site/board_pins.json` (Arduino
@@ -1383,7 +1416,7 @@ framework string (`-sdd thermometer:…`) — the equivalent here is
 ```
 stm32f1-emu/
 ├── Cargo.toml / Cargo.lock        Rust crate (cdylib+rlib, wasm-bindgen/js-sys/log/svd-parser)
-├── package.json                   npm stm32f1-emu@3.2.0 (exports ., ./emulator, ./cli, ./gdb, ./wasm)
+├── package.json                   npm stm32f1-emu@3.3.0 (exports ., ./emulator, ./cli, ./gdb, ./wasm)
 ├── pkg/                           emulator.js / stm32f1.js / gdbstub.mjs / ws-server.mjs / cli.mjs + WASM + .d.ts
 │   ├── bench_dual.mjs / bench_merged.mjs   legacy Unicorn Path-A benches (history only)
 │   └── index.html                 minimal .bin-only demo (no presets/events)
@@ -1420,6 +1453,7 @@ stm32f1-emu/
 
 | Version | Date | Key features |
 |---|---|---|
+| 3.3.0 | 2026-10-05 | ADC + TIM wrapper classes, per-batch event ordering, batch introspection |
 | 3.2.0 | 2026-09-26 | DMA + clocks/power/debug JS surface, watchdog proofs (772), repo rename |
 | 3.1.0 | 2026-09-12 | OTG_FS device/host, Maple DFU, SWD/JTAG slice + GDB Z2/Z3/Z4 |
 | 3.0.1/3.0.0 | 2026-09 | Real-stack USB (BTABLE-16, PMA-1K, SETUP-ACK, SOF-activity), docs viewer + sync |
@@ -1471,3 +1505,4 @@ stm32f1-emu/
 |---|---|
 | 2026-09-26 | First full-manual cut: 15 parts from the repo tree + Bramble shape; `scripts/guide_to_tex.py` converter; pdflatex source; website Guide entry |
 | 2026-09-27 | Bramble-depth pass: CPU structs + full ISA table + exception/delivery/lockup (§5.1–§5.4), per-peripheral register tables (§6.1–§6.14), RSP table (§9.1), storage/networking split (§10.1–§10.4), decision matrix (§12), annotated references + glossary (§15–§16) |
+| 2026-10-05 | 3.3.0 API pass: ADC + TIM wrapper classes (§8.5), per-batch event ordering, `getBatchSize`/`getInstCount`, version-history row |

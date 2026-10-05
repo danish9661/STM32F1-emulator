@@ -248,7 +248,8 @@ SECTIONS = [
     ('s82', r'^## 8\.2 High-level.*?\n(.*?)(?=^## 8\.3)'),
     ('s83', r'^## 8\.3 Low-level.*?\n(.*?)(?=^## 8\.4)'),
     ('s84', r'^## 8\.4 DMA API.*?\n(.*?)(?=^## 8\.5)'),
-    ('s85', r'^## 8\.5 Servers.*?\n(.*?)(?=^---\s*\n\n# Part 9)'),
+    ('s85', r'^## 8\.5 ADC.*?\n(.*?)(?=^## 8\.6)'),
+    ('s86', r'^## 8\.6 Servers.*?\n(.*?)(?=^---\s*\n\n# Part 9)'),
     ('s91', r'^## 9\.1 GDB remote debugging.*?\n(.*?)(?=^## 9\.2)'),
     ('s92', r'^## 9\.2 Debug output.*?\n(.*?)(?=^---\s*\n\n# Part 10)'),
     ('s101', r'^## 10\.1 Flash images.*?\n(.*?)(?=^## 10\.2)'),
@@ -267,7 +268,7 @@ SECTIONS = [
 MARK_P5 = '% --- generated from docs/STM32F1_Guide.md ## 5.1--5.4'
 MARK_P6 = '% --- generated from docs/STM32F1_Guide.md ## 6.1--6.14'
 MARK_P7 = '% --- generated from docs/STM32F1_Guide.md Part 7'
-MARK_P8 = '% --- generated from docs/STM32F1_Guide.md ## 8.1--8.5'
+MARK_P8 = '% --- generated from docs/STM32F1_Guide.md ## 8.1--8.6'
 MARK_P9 = '% --- generated from docs/STM32F1_Guide.md ## 9.1--9.2'
 MARK_P10 = '% --- generated from docs/STM32F1_Guide.md ## 10.1--10.4'
 MARK_P11 = '% --- generated from docs/STM32F1_Guide.md Part 11'
@@ -307,7 +308,8 @@ BLOCKS = {
             ('\\subsection{8.2 High-level API}', 's82'),
             ('\\subsection{8.3 Low-level API}', 's83'),
             ('\\subsection{8.4 DMA API}', 's84'),
-            ('\\subsection{8.5 Servers and debug}', 's85')]),
+            ('\\subsection{8.5 ADC + TIM API}', 's85'),
+            ('\\subsection{8.6 Servers and debug}', 's86')]),
     'p9': (MARK_P9,
            [('\\subsection{9.1 GDB remote debugging}', 's91'),
             ('\\subsection{9.2 Debug output and watch tools}', 's92')]),

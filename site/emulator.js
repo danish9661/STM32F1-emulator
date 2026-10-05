@@ -580,6 +580,18 @@ export async function createEmulator(opts = {}) {
             stopRequested = true;
         },
 
+        /** Configured batch size (`batch_size` create opt, default 20000). Lets
+         * drivers chunk long runs into identical batches with per-batch
+         * event drains between them. */
+        getBatchSize() {
+            return maxBatch;
+        },
+
+        /** Cumulative retired-instruction counter (baseline for exact run accounting). */
+        getInstCount() {
+            return instCount;
+        },
+
         // ---- Board hardware: NRST / BOOT0 / LED identity ----
         // All three live in the WASM itself (`board_*` exports), so any
         // driver (page, worker, ws-server, GDB) calls the same path:

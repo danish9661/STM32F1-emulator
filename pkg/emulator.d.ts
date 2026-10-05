@@ -132,6 +132,10 @@ export interface BluepillEmulator {
   step(maxBatch?: number): StepResult;
   /** Request stop of a running run() loop. */
   stop(): void;
+  /** Configured batch size (`batch_size` create opt, default 20000). */
+  getBatchSize(): number;
+  /** Cumulative retired-instruction counter. */
+  getInstCount(): number;
   /** Tear down the emulator (no-op; state resets on init). */
   close(): void;
 
