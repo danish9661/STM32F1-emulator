@@ -647,6 +647,38 @@ impl Peripherals {
         0
     }
 
+    /// PWM output pin for a timer channel (1-based timer number, 0-based
+    /// channel): packed (port << 4 | pin) with the LIVE AFIO remap applied
+    /// (port 0=A .. 3=D), or -1 when the timer/channel has no output pin.
+    /// Read-only observation helper for servo/LED/buzzer wiring; touches no
+    /// model state (never panics: unknown timers and borrow conflicts
+    /// both yield -1).
+    pub fn tim_chan_pin(&self, timer: u32, channel: u32) -> i32 {
+        let name = match timer {
+            1 => "TIM1",
+            2 => "TIM2",
+            3 => "TIM3",
+            4 => "TIM4",
+            5 => "TIM5",
+            8 => "TIM8",
+            9 => "TIM9",
+            10 => "TIM10",
+            11 => "TIM11",
+            12 => "TIM12",
+            13 => "TIM13",
+            14 => "TIM14",
+            _ => return -1, // 6/7 are basic timers (no channels); rest unknown
+        };
+        if channel > 3 {
+            return -1;
+        }
+        let remap = self.afio_remap_status(name).unwrap_or(0);
+        match tim::tim_chan_pin(name, channel as u8, remap) {
+            Some((port, pin)) => ((port << 4) | pin) as i32,
+            None => -1,
+        }
+    }
+
     pub fn read(&self, sys: &System, addr: u32, size: u8) -> u32 {
         if let Some((addr, bit_number)) = Self::bitbanding(addr) {
             return (self.read(sys, addr, 1) >> bit_number) & 1;

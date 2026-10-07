@@ -321,7 +321,9 @@ impl Adc {
     }
 
     fn adc_num(&self) -> u8 {
-        self.dma_channel
+        // dma_channel doubles as the ADC identity (1, 2, 13 = DMA2 ch5);
+        // AdcDone reports the ADC number (1..3), not the DMA stream.
+        if self.dma_channel == 13 { 3 } else { self.dma_channel }
     }
 
     /// Complete the conversion `c` and schedule the next one in the sequence.

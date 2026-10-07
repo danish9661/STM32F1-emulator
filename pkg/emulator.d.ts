@@ -233,6 +233,8 @@ export interface BluepillEmulator {
   gpioSetAnalog(port: number, pin: number, level: number): void;
   /** PWM duty (0-100) of a timer channel. */
   pwmDuty(addr: number, channel?: number): number;
+  /** PWM output pin for a timer channel: packed (port << 4 | pin), live AFIO remap, or -1. */
+  timChanPin(timer: number, channel?: number): number;
 
   // ── ADC / Analog ──────────────────────────────────────────────────────────
 
@@ -288,6 +290,8 @@ export interface BluepillEmulator {
   spiInjectMiso(channel: number, bytes: Uint8Array): void;
   /** Queue RX bytes for an I2C channel. */
   i2cInjectRx(channel: number, bytes: Uint8Array): void;
+  /** Drop all queued RX bytes for an I2C channel (clear-then-prefill at read-START; empty still NACKs). */
+  i2cClearRx(channel: number): void;
   /** Host START + address this I2C peripheral as a slave (false = NACK). */
   i2cInjectStart(channel: number, addr: number, isRead: boolean): boolean;
   /** Host data byte to an addressed slave (false = NACK). */

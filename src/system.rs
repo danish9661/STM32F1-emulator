@@ -691,6 +691,35 @@ impl WasmSystem {
         m.get_mut(&channel).and_then(|v| { if v.is_empty() { None } else { Some(v.remove(0)) } })
     }
 
+    /// Number of queued injected RX bytes for an I2C channel. A non-empty
+    /// queue is a virtual host's claim on the next addressed transfer
+    /// (JS-only slave ACK), and bounds the master-RX BTF tail arming.
+    pub fn i2c_rx_len(&self, channel: u8) -> usize {
+        self.i2c_rx.borrow().get(&channel).map(|v| v.len()).unwrap_or(0)
+    }
+
+    /// Return an unconsumed queue-sourced byte to the FRONT of the queue
+    /// (back-to-back transfers preserve FIFO order).
+    pub fn i2c_push_front_rx(&self, channel: u8, byte: u8) {
+        self.i2c_rx.borrow_mut().entry(channel).or_default().insert(0, byte);
+    }
+
+    /// Drop all queued injected RX bytes for an I2C channel (virtual device
+    /// -> MCU). Reactive runners clear-then-prefill at read-START (the
+    /// pointer is already drained into the model by then), so stale
+    /// leftovers from previous transactions never poison the front and
+    /// every transaction is exact regardless of execute-batch timing.
+    /// Clearing drops queued bytes only, never the host's address
+    /// registration: a registered address keeps ACKing while dry (reads serve
+    /// 0xFF). An address no host ever served still NACKs the address phase
+    /// (bus-scan/error semantics unchanged); in-flight DR-held bytes are
+    /// untouched.
+    pub fn i2c_clear_rx(&self, channel: u8) {
+        if let Some(v) = self.i2c_rx.borrow_mut().get_mut(&channel) {
+            v.clear();
+        }
+    }
+
     pub fn tick(&self) {
         let p = self.p.clone();
         let deep = p.in_deep_sleep();

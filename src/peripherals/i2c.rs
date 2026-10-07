@@ -51,6 +51,28 @@ pub struct I2c {
     /// STOPF clear sequence: set by an SR1 read while STOPF is up, consumed
     /// by the next CR1 write (RM0008: SR1 read followed by CR1 write).
     stopf_armed: bool,
+    /// Virtual-claim ACK (JS-only slave): the address phase ACKed a master
+    /// transfer with no engine-internal device because the inject queue held
+    /// bytes (a virtual host is serving this channel). Data comes from the
+    /// queue (0xFF when momentarily dry); master-TX bytes surface as
+    /// I2cWrite. Cleared on START/NACK/reset.
+    virtual_claim: bool,
+    /// Address the JS host has taken ownership of (virtual slave). Set the
+    /// first time an address phase is ACKed from the inject queue; unlike
+    /// `virtual_claim` (per-transfer) this persists across START/STOP so a
+    /// host that answers by reacting to `onWrite` is not starved once its
+    /// queue drains (chicken-and-egg: no queue -> no claim -> no onWrite ->
+    /// no inject). Cleared only by a peripheral SW reset / PE disable, i.e.
+    /// never by ordinary bus activity — a registered host slave stays
+    /// present until the emulator is re-created. An address that was never
+    /// registered still NACKs, preserving bus-scan/AF semantics.
+    virtual_addr: Option<u8>,
+    /// The byte currently held in DR came from the inject queue (address
+    /// preload or pipeline reload). The STOP-tail DR read returns it instead
+    /// of double-consuming the queue (RM0008 N=1 + HAL last-bytes drain),
+    /// and an unread held byte is returned to the queue front on START/STOP
+    /// so back-to-back transfers preserve FIFO order.
+    rx_hold_queued: bool,
     /// SMBus packet-error-code accumulator (CRC-8/SMBus, poly 0x07, init 0).
     /// Covers address+R/W + data bytes while PECEN (CR1.5) is set; readable
     /// via PECR. SMBALERT pin (CR1.13/SMBALERT) is register-only (no pin).
@@ -63,6 +85,8 @@ impl Default for I2c {
             name: String::new(), devices: Vec::new(), active_device: None,
             cr1: 0, cr2: 0, oar1: 0, oar2: 0, sr1: 0, sr2: 0, ccr: 0, trise: 0, dr: 0,
             state: I2cState::Idle, sr1_addr_flag: false, stopf_armed: false,
+            virtual_claim: false, rx_hold_queued: false,
+            virtual_addr: None,
             irq_ev: 0, irq_er: 0,
             dma_channel_tx: 0, dma_channel_rx: 0,
             pec: 0,
@@ -90,12 +114,51 @@ impl I2c {
         self.name.trim_start_matches("I2C").parse::<u8>().unwrap_or(0)
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, sys: &System) {
+        // An unread queue-sourced byte held in DR goes back to the queue
+        // front (FIFO preserved across back-to-back transfers); device-held
+        // bytes are re-readable from their model, so only queued holds move.
+        if self.rx_hold_queued {
+            sys.i2c_push_front_rx(self.i2c_channel(), self.dr as u8);
+        }
         self.sr1 = 0; self.sr2 = 0;
         self.active_device = None; self.state = I2cState::Idle;
         self.sr1_addr_flag = false;
         self.stopf_armed = false;
+        self.virtual_claim = false; self.rx_hold_queued = false;
         self.pec = 0;
+    }
+
+    /// Master-RX pipeline reload: account PEC, stage the next byte in DR
+    /// with RXNE, emit I2cRead, arm BTF once the tail (<=3 bytes queued) is
+    /// in sight, and poke DMA. Shared by the device-backed and virtual-claim
+    /// read arms. BTF arming is what the HAL N>2 tail (RXNE loop ends at
+    /// count==3 with BUF off; counts 4/3/2 complete through BTF) waits on —
+    /// without it multi-byte master reads stall and time out.
+    fn rx_reload(&mut self, sys: &System, byte: u8) {
+        if self.pec_enabled() {
+            if self.pec_xfer() {
+                // PEC byte itself: compare, NACK-equivalent
+                // error flag on mismatch (no accumulate).
+                if byte != self.pec {
+                    self.sr1 |= 1 << 12; // PECERR
+                }
+            } else {
+                self.pec_feed(byte);
+            }
+        }
+        self.dr = byte as u32;
+        self.sr1 |= 1 << 6; // RXNE
+        if sys.i2c_rx_len(self.i2c_channel()) <= 3 {
+            self.sr1 |= 1 << 2; // BTF: tail bytes buffered behind DR
+        } else {
+            self.sr1 &= !(1 << 2);
+        }
+        sys.push_event(crate::system::VmEvent::I2cRead { channel: self.i2c_channel() });
+        if self.cr2 & (1 << 11) != 0 {
+            let ch = self.resolve_dma_channel(sys, false);
+            if ch != 0 { sys.p.dma_request(sys, ch as u32); }
+        }
     }
 
     /// SMBus PEC update (CRC-8, poly x^8+x^2+x+1 = 0x07, init 0, MSB-first).
@@ -295,33 +358,61 @@ impl Peripheral for I2c {
             0x20 => self.trise,
             0x30 => self.pec as u32, // PECR: computed packet error code
                 0x10 => {
-                    let v = self.dr;
-                    self.sr1 &= !(1 << 6); // Clear RXNE on DR read
-                    self.sr1 &= !(1 << 2); // BTF clears on DR read (byte taken)
-                    if let Some(idx) = self.active_device {
-                        if matches!(self.state, I2cState::Active { is_read: true }) {
-                            let byte = {
-                                let mut d = self.devices[idx].device.borrow_mut();
-                                sys.i2c_take_rx(self.i2c_channel()).unwrap_or_else(|| d.read(sys, ()) as u8)
-                            };
-                            if self.pec_enabled() {
-                                if self.pec_xfer() {
-                                    // PEC byte itself: compare, NACK-equivalent
-                                    // error flag on mismatch (no accumulate).
-                                    if byte != self.pec {
-                                        self.sr1 |= 1 << 12; // PECERR
-                                    }
-                                } else {
-                                    self.pec_feed(byte);
-                                }
-                            }
-                            self.dr = byte as u32;
-                            self.sr1 |= 1 << 6; // RXNE
+                let mut v = self.dr;
+                // Capture before clearing: the single-byte master-RX keep-alive
+                // (STOP programmed right after ADDR, RM0008 N=1) reaches here as
+                // Idle + no device with the byte still held in RXNE.
+                let rxne_pending = self.sr1 & (1 << 6) != 0;
+                self.sr1 &= !(1 << 6); // Clear RXNE on DR read
+                self.sr1 &= !(1 << 2); // BTF clears on DR read (byte taken)
+                if matches!(self.state, I2cState::Active { is_read: true }) {
+                    // Master receiver: device-backed or virtual-claim (JS-only
+                    // slave). The queue wins either way; the device model (or
+                    // released-SDA 0xFF for a dry virtual claim) is the fallback.
+                    if self.active_device.is_some() || self.virtual_claim {
+                        let ch = self.i2c_channel();
+                        let qb = sys.i2c_take_rx(ch);
+                        self.rx_hold_queued = qb.is_some();
+                        let byte = match qb {
+                            Some(b) => b,
+                            None => match self.active_device {
+                                Some(idx) => self.devices[idx].device.borrow_mut().read(sys, ()) as u8,
+                                None => 0xFF,
+                            },
+                        };
+                        self.rx_reload(sys, byte);
+                    }
+                    } else if rxne_pending && matches!(self.state, I2cState::Idle) {
+                        // Master-RX STOP tail: the STOP handler already went Idle
+                        // with a byte held in RXNE (RM0008 N=1, or the HAL N>2
+                        // last-bytes drain which reads twice after STOP with no
+                        // further bus clocks).
+                        if self.rx_hold_queued {
+                            // The held byte came from the queue (address preload
+                            // or pipeline reload): it IS the received byte, so
+                            // return it instead of double-consuming the queue.
+                            // Still-queued bytes stay readable (RXNE re-armed)
+                            // for the drain-style tail; each byte emits exactly
+                            // one I2cRead.
+                            v = self.dr;
                             sys.push_event(crate::system::VmEvent::I2cRead { channel: self.i2c_channel() });
-                            if self.cr2 & (1 << 11) != 0 {
-                                let ch = self.resolve_dma_channel(sys, false);
-                                if ch != 0 { sys.p.dma_request(sys, ch as u32); }
+                            if let Some(nb) = sys.i2c_take_rx(self.i2c_channel()) {
+                                self.dr = nb as u32;
+                                self.sr1 |= 1 << 6; // RXNE
+                                self.rx_hold_queued = true;
+                            } else {
+                                self.rx_hold_queued = false;
                             }
+                        } else {
+                            // Stale/device-held byte, late inject wins — virtual
+                            // hosts answer the I2cStart after the address-phase
+                            // preload. Single-shot: the transfer is over, this
+                            // read consumes.
+                            let byte = sys.i2c_take_rx(self.i2c_channel()).unwrap_or(v as u8);
+                            self.dr = byte as u32;
+                            v = byte as u32;
+                            self.rx_hold_queued = false;
+                            sys.push_event(crate::system::VmEvent::I2cRead { channel: self.i2c_channel() });
                         }
                     }
                     self.fire_interrupts(sys);
@@ -364,6 +455,19 @@ impl Peripheral for I2c {
                         if is_read {
                             self.sr1 |= 1 << 6; // RXNE
                             self.sr2 &= !(1 << 2); // TRA=0 (receiver)
+                            // BTF arming for short host-served reads: with <=3
+                            // bytes queued the HAL N<=4 tail completes purely
+                            // through BTF (counts 4/3/2) without any DR read
+                            // ever occurring, so the reload path can't arm it.
+                            // N==1 is excluded via ACK==0 (HAL NACKs at ADDR
+                            // for a single byte, which then drains via RXNE).
+                            let ack = self.cr1 & (1 << 10) != 0;
+                            let served = self.active_device.is_some() || self.virtual_claim;
+                            if ack && served && sys.i2c_rx_len(self.i2c_channel()) <= 3 {
+                                self.sr1 |= 1 << 2; // BTF
+                            } else {
+                                self.sr1 &= !(1 << 2);
+                            }
                             if self.cr2 & (1 << 11) != 0 {
                                 let ch = self.resolve_dma_channel(sys, false);
                                 if ch != 0 { sys.p.dma_request(sys, ch as u32); }
@@ -401,13 +505,15 @@ impl Peripheral for I2c {
 
                 // SW reset (bit 15)
                 if value & (1 << 15) != 0 {
-                    self.reset();
+                    self.reset(sys);
                     self.cr1 = value & 1;
+                    self.virtual_addr = None;
                     return;
                 }
                 // Disable (PE=0)
                 if prev_pe != 0 && value & 1 == 0 {
-                    self.reset();
+                    self.reset(sys);
+                    self.virtual_addr = None;
                     return;
                 }
 
@@ -416,6 +522,16 @@ impl Peripheral for I2c {
 
                 // START generation
                 if start != 0 && prev_start == 0 {
+                    // A new transfer claims the bus: an unread queue-sourced
+                    // byte held from a previous STOP tail goes back to the
+                    // queue front (FIFO preserved across back-to-back
+                    // transfers), then the virtual claim lapses (the next
+                    // address phase re-claims if the queue is non-empty).
+                    if self.rx_hold_queued {
+                        sys.i2c_push_front_rx(self.i2c_channel(), self.dr as u8);
+                        self.rx_hold_queued = false;
+                    }
+                    self.virtual_claim = false;
                     self.state = I2cState::StartSent;
                     self.sr1 = 1; // SB
                     self.sr2 = (1 << 0) | (1 << 1); // BUSY=1, MSL=1
@@ -437,11 +553,11 @@ impl Peripheral for I2c {
                             self.active_device = None;
                             self.sr1_addr_flag = false;
                         } else {
-                            self.reset();
+                            self.reset(sys);
                         }
                     } else {
                         // STOP in any other state (e.g. StartSent) — clear BUSY/MSL
-                        self.reset();
+                        self.reset(sys);
                     }
                     self.cr1 &= !(1 << 9); // Clear STOP
                 }
@@ -508,19 +624,59 @@ impl Peripheral for I2c {
                                 self.pec_feed(value as u8);
                             }
                             if is_read {
-                                let mut d = self.devices[idx].device.borrow_mut();
-                                self.dr = d.read(sys, ()) as u32;
+                                let ch = self.i2c_channel();
+                                let qb = sys.i2c_take_rx(ch);
+                                self.rx_hold_queued = qb.is_some();
+                                let byte = qb.unwrap_or_else(|| {
+                                    self.devices[idx].device.borrow_mut().read(sys, ()) as u8
+                                });
+                                self.dr = byte as u32;
                             }
                             self.state = I2cState::AddrSent { is_read };
                         } else {
-                            // NACK: set AF (Acknowledge Failure, bit 10)
-                            // Real HW generates STOP automatically on NACK, clearing BUSY/MSL
-                            self.sr1 = 1 << 10;
-                            self.sr2 = 0; // BUSY=0, MSL=0 (STOP generated)
-                            self.state = I2cState::Idle;
-                            self.active_device = None;
-                            self.sr1_addr_flag = false;
-                            sys.push_event(crate::system::VmEvent::I2cStop { channel: self.i2c_channel() });
+                            // No engine-internal slave at this address. A
+                            // non-empty inject queue is a virtual host's claim
+                            // (JS-only slave via onStart/onWrite/onRead +
+                            // injectRx, no add_i2c_eeprom): ACK it with ADDR
+                            // like a real slave so master transfers can run.
+                            // Data comes from the queue (0xFF when momentarily
+                            // dry); master-TX bytes surface as I2cWrite. An
+                            // empty queue still NACKs (AF), preserving
+                            // bus-scan and error semantics (see
+                            // test_i2c_busy). CR1 ACK is not consulted here —
+                            // it governs slave-to-master byte ACKs, not the
+                            // address ACK — matching the device arm above.
+                            let ch = self.i2c_channel();
+                            if sys.i2c_rx_len(ch) > 0 || self.virtual_addr == Some(addr) {
+                                self.active_device = None;
+                                self.virtual_claim = true;
+                                // Register the address for this host: from here on
+                                // the claim no longer depends on queue depth, so
+                                // an onWrite-answering slave keeps working after
+                                // its queue drains (see `virtual_addr`).
+                                self.virtual_addr = Some(addr);
+                                self.sr1 = 1 << 1; // ADDR
+                                self.sr2 = (1 << 0) | (1 << 1); // BUSY=1, MSL=1
+                                if self.pec_enabled() {
+                                    self.pec = 0;
+                                    self.pec_feed(value as u8);
+                                }
+                                if is_read {
+                                    let qb = sys.i2c_take_rx(ch);
+                                    self.rx_hold_queued = qb.is_some();
+                                    self.dr = qb.unwrap_or(0xFF) as u32;
+                                }
+                                self.state = I2cState::AddrSent { is_read };
+                            } else {
+                                // NACK: set AF (Acknowledge Failure, bit 10)
+                                // Real HW generates STOP automatically on NACK, clearing BUSY/MSL
+                                self.sr1 = 1 << 10;
+                                self.sr2 = 0; // BUSY=0, MSL=0 (STOP generated)
+                                self.state = I2cState::Idle;
+                                self.active_device = None;
+                                self.sr1_addr_flag = false;
+                                sys.push_event(crate::system::VmEvent::I2cStop { channel: self.i2c_channel() });
+                            }
                         }
                         self.fire_interrupts(sys);
                     }
@@ -537,7 +693,13 @@ impl Peripheral for I2c {
                             let mut d = self.devices[idx].device.borrow_mut();
                             d.write(sys, (), txb);
                             sys.push_event(crate::system::VmEvent::I2cWrite { channel: self.i2c_channel(), byte: txb });
+                        } else if self.virtual_claim {
+                            // JS-only slave: no model to update, but the byte
+                            // is still observed (register pointers, commands).
+                            sys.push_event(crate::system::VmEvent::I2cWrite { channel: self.i2c_channel(), byte: txb });
                         }
+                        // DR now carries a TX byte: any held RX byte is gone.
+                        self.rx_hold_queued = false;
                         if self.pec_enabled() && !self.pec_xfer() {
                             self.pec_feed(value as u8);
                         }

@@ -2,6 +2,107 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] — ADC/TIM observation hardening (hook-contract work)
+
+### Fixed
+- `AdcDone` event for ADC3 reported `adc=13` (the DMA stream id: ADC3 ->
+  DMA2 ch5); it now reports the ADC number (`adc=3`), matching the
+  documented `onAdcDone(adc, chan)` contract (`src/peripherals/adc.rs`
+  `adc_num()`). ADC1/ADC2 numbering is unchanged.
+- Single-byte I2C master-RX (`Wire.requestFrom(addr, 1)`, RM0008 N=1: NACK +
+  STOP right after ADDR) returned a stale `0x00` and emitted no `I2cRead`
+  event: the STOP handler parks the transfer in Idle with the byte held in
+  RXNE before the firmware's DR read, skipping the queue/event arm, and the
+  address-phase preload never consulted the inject queue (shifting pre-queued
+  multi-byte reads by one as well). The DR-read tail now consults
+  `i2c_take_rx` (falling back to the preloaded byte) and emits `I2cRead`,
+  and the preload prefers the queued byte (`src/peripherals/i2c.rs`).
+- Multi-byte I2C master-RX (`Wire.requestFrom(addr, 14)`, HAL
+  `I2C_MasterReceive_BTF` tail) stalled with 2 bytes remaining and timed
+  out, so `requestFrom` returned 0 (all `read()` -1) although read events
+  flowed: the RXNE loop ends at count==3 with BUF off and counts 4/3/2
+  complete purely through BTF, which the model never set in master-RX. The
+  pipeline reload now arms BTF once <=3 bytes remain queued, and the
+  ADDR-clear arms it for short host-served reads (N==1 excluded via ACK==0).
+  The STOP tail also serves drain-style reads (HAL reads twice after STOP
+  with no further clocks) with exactly one `I2cRead` per byte, and an
+  N=1 tail no longer double-consumes a prefilled queue
+  (`src/peripherals/i2c.rs` `rx_reload`, `src/system.rs` `i2c_rx_len`).
+- JS-only I2C slaves (no engine-internal device at the address) NACKed even
+  the address phase (AF), so purely virtual sensors could serve nothing. A
+  non-empty inject queue is now a virtual host's claim: the address ACKs
+  (ADDR like a real slave), read data comes from the queue (`0xFF` when
+  momentarily dry), and master-TX bytes surface as `I2cWrite`. An empty
+  queue still NACKs, preserving bus-scan and HAL error semantics
+  (`src/peripherals/i2c.rs` virtual-claim arm; unread held bytes return to
+  the queue front on START/STOP so back-to-back transfers stay FIFO-exact).
+- JS-only I2C slaves starved across transfers: the claim was gated purely
+  on queue depth at the address phase, so once a host drained its queue the
+  next transfer NACKed, `onWrite` never fired, and the host could never
+  re-arm -- pointer write + repeated START + `requestFrom(addr, 1)` returned
+  `0x00` with zero `I2cRead` while longer bursts from the same session
+  looked exact. The first queue-backed claim now registers the address
+  (`virtual_addr`, sticky across START/STOP and drains, cleared only by SW
+  reset / PE disable): a registered address keeps ACKing while dry, and only
+  a never-served address NACKs. Like silicon -- a real slave does not
+  un-address itself over an empty TX buffer (`src/peripherals/i2c.rs`).
+
+### Added
+- `i2c_clear_rx(channel)` wasm export (`src/lib.rs`, `src/system.rs`
+  `i2c_clear_rx`, `pkg/emulator.js` `i2cClearRx` + `.d.ts`, `pkg/stm32f1.js`
+  `I2C.clearRx()` + `.d.ts`): drop all queued injected RX bytes on an I2C
+  channel. Reactive runners `clearRx()` then `injectRx(fresh)` at read-START
+  (the pointer is already drained into the model by then), so stale
+  leftovers from previous transactions never poison the front and every
+  transaction is exact regardless of execute-batch timing. An empty queue
+  still NACKs the address phase; in-flight DR-held bytes are untouched.
+- `tim_chan_pin(timer, channel)` wasm export (`src/lib.rs`,
+  `src/peripherals/mod.rs`, `pkg/emulator.js` + `.d.ts`): PWM output pin
+  for a timer channel as packed `(port << 4 | pin)` with the live AFIO
+  remap applied, or -1 when the timer/channel has no output pin. Read-only;
+  no model state is touched.
+- `TIM.pin(ch)` on the `STM32F1` wrapper (`pkg/stm32f1.js` + `.d.ts`):
+  `{ port: 'A'..'D', pin }` for the channel, or `null`. For wiring PWM
+  outputs (servo/LED/buzzer) to the right board pin without duplicating
+  the remap table.
+- `_emu: BluepillEmulator` on the `STM32F1` wrapper (`pkg/stm32f1.d.ts`):
+  the documented low-level escape hatch (takeFault / memRead32 /
+  periphRead / irqNext / dmaPump / rccClocksHz / swd* / ...) was reachable
+  at runtime and in the API docs but missing from the types, so TypeScript
+  users could neither discover nor touch it. Mutable (`_reload`
+  reassigns it); type was already imported.
+
+### Tests
+- `tests/test_all.mjs`: ADC3 `AdcDone` triple carries `adc=3, chan=1`;
+  `tim_chan_pin` defaults (TIM1..4), basic-timer/OOB/unknown `-1`, and
+  live TIM3 full-remap PA6 -> PC6 -> restore.
+- `tests/test_stm32f1_api.mjs` 23 -> 39: TIM all-channel duty, TIM3 50 Hz
+  servo shape (freq + 7% pulse), `TIM.pin()` incl. null cases, ADC2/ADC3
+  inject end-to-end (shared pin wire, `onAdcDone` numbers).
+- `tests/test_i2c_single_byte.mjs` 7/7 -> 93/93 (new, wired into CI):
+  1-byte master-RX returns the queued byte + exactly one `I2cRead`
+  (pre-queued and late onStart-style injects), 2-byte control byte-exact
+  with two `I2cRead`s; plus the HAL-IT EV dispatch for N=2 (POS) and N=14
+  (BTF tail) — byte-exact with exact `I2cRead` counts both with an ACK-sink
+  device and purely JS-served — back-to-back 1-then-14 on one shared
+  prefill, AF-NACK preservation for unclaimed addresses, and `clearRx`:
+  32 stale + clear + 2 fresh reads exact (stale front proven to poison
+  without the clear), cleared queue NACKs, facade (`i2cClearRx` /
+  `I2C.clearRx`) drives the same queue.
+- `tests/test_i2c_single_byte.mjs` 93 -> 94: the cleared-queue assertion
+  now encodes the sticky host registration (registered address still ACKs
+  after clear; a never-registered address still NACKs, which is where the
+  bus-scan rationale lives now).
+- `tests/test_i2c_js_slave.mjs` 17/17 (new, wired into CI right after
+  `test_i2c_single_byte`): pointer write + `endTransmission(false)` +
+  repeated START + `requestFrom(0x68, 1|6)` over real HAL code against a
+  purely JS-served slave (new `tests/arduino_i2c_js_slave` firmware, ELF
+  shipped force-added at `site/arduino_i2c_js_slave.elf`) — READ1 returns
+  the exact queued byte, READ6 is FIFO byte-exact, one `I2cRead` per
+  requested byte; plus the register-level pin-down (registered address
+  ACKs after a drained queue, per-address NACK preserved, SW reset drops
+  the registration).
+
 ## [3.3.0] — 2026-10-05 — ADC + TIM wrapper classes, per-batch event ordering
 
 ### Added

@@ -56,7 +56,9 @@ fn read_master_trigger(sys: &System, master_base: u32, _ch: u8) -> bool {
 /// Default + AFIO-remapped channel -> GPIO pin mapping for STM32F103 timers.
 /// `remap` is the AFIO MAPR remap code for the timer (0 = default).
 /// Returns (port, pin) where port: 0=A, 1=B, 2=C, 3=D.
-fn tim_chan_pin(name: &str, ch: u8, remap: u32) -> Option<(u8, u8)> {
+/// (pub(crate): also served to JS as the `tim_chan_pin` observation export
+/// so hosts can wire PWM outputs to board pins without duplicating this table.)
+pub(crate) fn tim_chan_pin(name: &str, ch: u8, remap: u32) -> Option<(u8, u8)> {
     let pins: &[(u8, u8)] = match name {
         "TIM1" => &[(0, 8), (0, 9), (0, 10), (0, 11)], // no remap on Bluepill F103C8
         "TIM2" => match remap & 3 {

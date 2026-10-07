@@ -76,6 +76,8 @@ export class I2C {
 
   /** Queue RX bytes the MCU reads during master-receiver transactions. */
   injectRx(bytes: Uint8Array | number[]): void;
+  /** Drop all queued RX bytes (clear-then-prefill at read-START for exact transactions). */
+  clearRx(): void;
 }
 
 // ── ADC ─────────────────────────────────────────────────────────────────────
@@ -107,6 +109,8 @@ export class TIM {
   enabled(): boolean;
   /** Output duty 0..100 for channel ch (0-based). 0 unless the timer runs. */
   duty(ch?: number): number;
+  /** Output pin carrying channel ch (0-based), live AFIO remap applied, or null. */
+  pin(ch?: number): { port: string; pin: number } | null;
   /** Output frequency in Hz from PSC/ARR and the clock tree. 0 unless the timer runs. */
   frequency(): number;
 }
@@ -182,6 +186,14 @@ export class STM32F1 {
   readonly tim6: TIM;
   readonly tim7: TIM;
   readonly tim: { 1: TIM; 2: TIM; 3: TIM; 4: TIM; 5: TIM; 6: TIM; 7: TIM };
+
+  /**
+   * Escape hatch to the underlying low-level emulator (all 90+ methods:
+   * takeFault/memRead32/periphRead/irqNext/dmaPump/rccClocksHz/swd*/...).
+   * Documented in docs/STM32F1_API.md; anything not wrapped above lives here.
+   * Reassigned by loadELF/loadBin/loadHex/_reload.
+   */
+  _emu: BluepillEmulator;
 
   // ── Top-level event callbacks (set directly on instance) ───────────────────
 

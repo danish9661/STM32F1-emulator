@@ -10,6 +10,7 @@ const { init, init_svd, periph_read, periph_write, tick, step_batch, has_pending
         add_sd_card, reset_ext_devices, rcc_sysclk_hz, rcc_clocks_hz, rcc_mco_hz,
         rcc_fail_hse, pwr_set_supply_mv, add_i2c_eeprom,
         drain_events, usb_inject_setup, usb_inject_out, usb_bus_reset, usb_detach, pwm_duty,
+        tim_chan_pin,
         otg_host_attach,
         swd_dp_read, swd_dp_write, swd_ap_read, swd_ap_write,
         swd_add_watchpoint, swd_remove_watchpoint, swd_halted, swd_resume,
@@ -570,6 +571,23 @@ periph.board_nrst();
 step_batch(1000);
 assert_eq(periph_read(ADC1 + 0x00, 4) & 4, 0, 'ADC no JEOC after NRST without fresh trigger');
 
+// ADC3 completion reports adc=3 in the AdcDone triple (not the DMA stream
+// id: ADC3 -> DMA2 ch5 = stream 13). ADC3EN + SQ1=ch1 + SWSTART, then the
+// drained [8, adc, chan] triple carries adc 3.
+reset();
+periph_write(0x40021018, 4, 1 << 15); // APB2ENR: ADC3EN
+adc_set_rc_tau(1);
+const ADC3A = 0x40013C00; // (suffixed: a later group declares its own ADC3)
+periph_write(ADC3A + 0x34, 4, 1); // SQ1 = ch1 (PA1)
+periph_write(ADC3A + 0x08, 4, (1 << 0) | (1 << 22)); // ADON + SWSTART
+step_batch(30);
+assert_eq(periph_read(ADC3A + 0x00, 4) & 2, 2, 'ADC3 EOC set');
+const a3ev = Array.from(drain_events());
+const a3i = a3ev.indexOf(8);
+assert_neq(a3i, -1, 'ADC3 AdcDone event drained');
+assert_eq(a3ev[a3i + 1], 3, 'ADC3 AdcDone carries adc=3');
+assert_eq(a3ev[a3i + 2], 1, 'ADC3 AdcDone carries chan=1');
+
 // ============================================================
 // RCC
 // ============================================================
@@ -822,6 +840,28 @@ assert_eq(periph_read(TIM1 + 0x34, 4), 333, 'TIM1 single-burst repeats CCR1');
 periph_write(TIM1 + 0x48, 4, (1 << 8) | 0x0D);
 periph_write(TIM1 + 0x4C, 4, 444);
 assert_eq(periph_read(TIM1 + 0x34, 4), 444, 'TIM1 DCR reprogram restarts window');
+
+// tim_chan_pin observation export (servo/LED/buzzer wiring): packed
+// (port << 4 | pin) with the live AFIO remap, -1 when no output pin.
+// Hermetic: AFIO clock on, MAPR cleared first (earlier groups never touch
+// MAPR, but later edits might).
+periph_write(0x40021018, 4, periph_read(0x40021018, 4) | 1); // AFIOEN
+periph_write(0x40010004, 4, 0); // AFIO MAPR: no remaps
+assert_eq(tim_chan_pin(3, 0), 0x06, 'tim_chan_pin TIM3 CH1 = PA6 default');
+assert_eq(tim_chan_pin(2, 0), 0x00, 'tim_chan_pin TIM2 CH1 = PA0 default');
+assert_eq(tim_chan_pin(2, 3), 0x03, 'tim_chan_pin TIM2 CH4 = PA3 default');
+assert_eq(tim_chan_pin(1, 3), 0x0B, 'tim_chan_pin TIM1 CH4 = PA11');
+assert_eq(tim_chan_pin(4, 2), 0x18, 'tim_chan_pin TIM4 CH3 = PB8 default');
+assert_eq(tim_chan_pin(6, 0), -1, 'tim_chan_pin TIM6 (basic timer) has no output');
+assert_eq(tim_chan_pin(7, 0), -1, 'tim_chan_pin TIM7 (basic timer) has no output');
+assert_eq(tim_chan_pin(2, 4), -1, 'tim_chan_pin channel out of range');
+assert_eq(tim_chan_pin(99, 0), -1, 'tim_chan_pin unknown timer');
+// Live remap: TIM3 full remap (MAPR bits[11:10]=11) moves CH1 PA6 -> PC6,
+// and clearing MAPR restores the default.
+periph_write(0x40010004, 4, 3 << 10);
+assert_eq(tim_chan_pin(3, 0), 0x26, 'tim_chan_pin TIM3 CH1 follows remap to PC6');
+periph_write(0x40010004, 4, 0);
+assert_eq(tim_chan_pin(3, 0), 0x06, 'tim_chan_pin TIM3 CH1 back to PA6 after MAPR clear');
 reset();
 
 // ============================================================

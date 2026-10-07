@@ -155,6 +155,16 @@ export class I2C {
     }
     /** Queue RX bytes the MCU reads during master-receiver transactions. */
     injectRx(bytes) { this._mcu._emu.i2cInjectRx(this.ch, Uint8Array.from(bytes)); }
+    /**
+     * Drop all queued RX bytes on this bus. Reactive runners call
+     * `clearRx()` then `injectRx(fresh)` at read-START (the pointer is
+     * already drained into the model by then), so stale leftovers from
+     * previous transactions never poison the front. Clearing drops queued
+     * bytes only, never the host's address registration: a registered
+     * address keeps ACKing while dry. An address no host ever served still
+     * NACKs the address phase.
+     */
+    clearRx() { this._mcu._emu.i2cClearRx(this.ch); }
     /** @internal */
     _start(addr) { if (this.onStart) this.onStart(addr); }
     /** @internal */
@@ -249,6 +259,17 @@ export class TIM {
     enabled() { return (this._mcu._emu.periphRead(this.base, 4) & 1) !== 0; }
     /** Output duty 0..100 for channel ch (0-based). 0 unless the timer runs. */
     duty(ch = 0) { return this.enabled() ? this._mcu._emu.pwmDuty(this.base, ch) : 0; }
+    /**
+     * Output pin carrying channel ch (0-based), with the live AFIO remap
+     * applied — e.g. `{ port: 'B', pin: 6 }` for TIM3 CH1 by default.
+     * Returns null when the timer/channel has no output pin (basic timers,
+     * out-of-range channels). Read-only; safe to call before firmware runs.
+     */
+    pin(ch = 0) {
+        const v = this._mcu._emu.timChanPin(this.n, ch | 0);
+        if (!(v >= 0)) return null;
+        return { port: 'ABCD'[(v >> 4) & 7], pin: v & 0xF };
+    }
     /** Output frequency in Hz from PSC/ARR and the clock tree. 0 unless the timer runs. */
     frequency() {
         if (!this.enabled()) return 0;

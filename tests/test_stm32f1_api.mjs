@@ -127,6 +127,61 @@ ok(timUpd === 2, 'onTimUpdate fired for TIM2');
 ok(mcu.tim3.enabled() === false && mcu.tim3.frequency() === 0 && mcu.tim3.duty(0) === 0,
     'stopped timer observes duty/frequency as 0');
 
+// TIM all-channel duty: CCR2/3/4 + CCER enable -> duty(1..3).
+mcu._emu.periphWrite(T2 + 0x38, 4, 500); // CCR2
+mcu._emu.periphWrite(T2 + 0x3C, 4, 750); // CCR3
+mcu._emu.periphWrite(T2 + 0x40, 4, 1000); // CCR4
+mcu._emu.periphWrite(T2 + 0x20, 4, 0x1111); // CC1E..CC4E
+mcu.step(20000);
+ok(mcu.tim2.duty(1) === 50, 'tim2.duty(1) reads 50%');
+ok(mcu.tim2.duty(2) === 75, 'tim2.duty(2) reads 75%');
+ok(mcu.tim2.duty(3) === 100, 'tim2.duty(3) reads 100%');
+
+// Servo shape: TIM3 at 50 Hz (PSC=1439/ARR=999 on the live 72 MHz timer
+// clock) with a 1.5 ms pulse -> duty 7%.
+const T3 = 0x40000400;
+mcu._emu.periphWrite(0x4002101C, 4, mcu._emu.periphRead(0x4002101C, 4) | (1 << 1)); // +TIM3EN
+mcu._emu.periphWrite(T3 + 0x28, 4, 1439); // PSC
+mcu._emu.periphWrite(T3 + 0x2C, 4, 999); // ARR
+mcu._emu.periphWrite(T3 + 0x34, 4, 75); // CCR1 = 1.5 ms pulse
+mcu._emu.periphWrite(T3 + 0x20, 4, 1); // CCER: CC1E
+mcu._emu.periphWrite(T3 + 0x00, 4, 1); // CR1: CEN
+mcu.step(20000);
+ok(mcu.tim3.enabled() === true, 'tim3.enabled() reflects CEN');
+ok(mcu.tim3.frequency() === 50, 'tim3.frequency() reads 50Hz servo rate');
+ok(mcu.tim3.duty(0) === 7, 'tim3.duty(0) reads 7% (1.5ms pulse)');
+
+// TIM output-pin map (live AFIO remap; null when no output pin).
+const p31 = mcu.tim3.pin(0);
+ok(p31 && p31.port === 'A' && p31.pin === 6, 'tim3.pin(0) = PA6 default');
+const p21 = mcu.tim2.pin(0);
+ok(p21 && p21.port === 'A' && p21.pin === 0, 'tim2.pin(0) = PA0 default');
+ok(mcu.tim6.pin(0) === null, 'tim6.pin(0) null (basic timer)');
+ok(mcu.tim2.pin(4) === null, 'tim2.pin(4) null (channel out of range)');
+
+// ADC2/ADC3 inject end-to-end. The pin wire is shared: every ADC sampling
+// the pin sees the same voltage (proves ADC1..3 route identically).
+mcu.adc2.setVoltage(0, 3300); // PA0 wire -> full scale
+const A2 = 0x40012800;
+mcu._emu.periphWrite(0x40021018, 4, mcu._emu.periphRead(0x40021018, 4) | (1 << 10)); // +ADC2EN
+mcu._emu.periphWrite(A2 + 0x34, 4, 0); // ADC2 SQ1 = ch0
+mcu._emu.periphWrite(A2 + 0x08, 4, 1 | (1 << 22)); // ADON + SWSTART
+mcu.step(5000);
+ok((mcu._emu.periphRead(A2, 4) & 2) === 2, 'ADC2 EOC on shared PA0 wire');
+ok((mcu._emu.periphRead(A2 + 0x4C, 4) & 0xFFF) === 4095, 'ADC2 DR full-scale from shared wire');
+ok(adcDone && adcDone[0] === 2 && adcDone[1] === 0, 'onAdcDone fired for ADC2 ch0');
+
+// ADC3: completion number is the ADC (3), proven through the facade event.
+const A3 = 0x40013C00;
+mcu._emu.periphWrite(0x40021018, 4, mcu._emu.periphRead(0x40021018, 4) | (1 << 15)); // +ADC3EN
+mcu.adc3.setVoltage(1, 2475); // PA1 -> code 3071
+mcu._emu.periphWrite(A3 + 0x34, 4, 1); // ADC3 SQ1 = ch1
+mcu._emu.periphWrite(A3 + 0x08, 4, 1 | (1 << 22)); // ADON + SWSTART
+mcu.step(5000);
+ok((mcu._emu.periphRead(A3, 4) & 2) === 2, 'ADC3 EOC');
+ok((mcu._emu.periphRead(A3 + 0x4C, 4) & 0xFFF) === 3071, 'ADC3 DR matches injected 2475mV');
+ok(adcDone && adcDone[0] === 3 && adcDone[1] === 1, 'onAdcDone fired for ADC3 ch1 (adc=3)');
+
 // Cycle/instruction counter per step (sim-time edge stamps + pace accounting).
 const rr = mcu.step(100);
 ok(rr && typeof rr.instCount === 'number' && typeof rr.pc === 'number',

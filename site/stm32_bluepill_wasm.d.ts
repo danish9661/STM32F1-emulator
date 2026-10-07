@@ -258,6 +258,13 @@ export function gpio_take_pin_events(): Uint32Array;
 export function has_pending_interrupt(): boolean;
 
 /**
+ * Drop all queued injected RX bytes for an I2C channel. Reactive runners
+ * clear-then-prefill at read-START so stale leftovers never poison the
+ * front (empty queue still NACKs the address phase, as before).
+ */
+export function i2c_clear_rx(channel: number): void;
+
+/**
  * SMBus ALERT input: peer pulled SMBA low on this channel → SR1 SMBALERT
  * flag (+ error IRQ when ITERREN). Returns false when disabled/no channel.
  */
@@ -645,6 +652,15 @@ export function swd_take_trip(): Uint32Array;
 export function tick(): void;
 
 /**
+ * PWM output pin for a timer channel (1-based timer number, 0-based
+ * channel): packed (port << 4 | pin) with the live AFIO remap applied
+ * (port 0=A .. 3=D), or -1 when the timer/channel has no output pin.
+ * E.g. tim_chan_pin(3, 0) = 0x06 (PA6) by default. Read-only observation
+ * helper for servo/LED/buzzer wiring; -1 before init too.
+ */
+export function tim_chan_pin(timer: number, channel: number): number;
+
+/**
  * Set touch coordinates on a touchscreen device. Must be called after init().
  */
 export function touchscreen_set_touch(peripheral: string, x: number, y: number, pressure: number): void;
@@ -740,6 +756,7 @@ export interface InitOutput {
     readonly gpio_set_slew: (a: number) => void;
     readonly gpio_take_pin_events: () => [number, number];
     readonly has_pending_interrupt: () => number;
+    readonly i2c_clear_rx: (a: number) => void;
     readonly i2c_inject_alert: (a: number) => number;
     readonly i2c_inject_read: (a: number) => number;
     readonly i2c_inject_rx: (a: number, b: number, c: number) => void;
@@ -813,6 +830,7 @@ export interface InitOutput {
     readonly swd_step: () => number;
     readonly swd_take_trip: () => [number, number];
     readonly tick: () => void;
+    readonly tim_chan_pin: (a: number, b: number) => number;
     readonly touchscreen_set_touch: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly uart_inject_break: (a: number) => number;
     readonly uart_rx_byte: (a: number, b: number) => number;

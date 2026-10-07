@@ -135,7 +135,12 @@ console.log(mcu.usart1.output);
   RC sample-and-hold); 16-18 (temp/VREF/VBAT) use the internal override;
   higher channels fall back to the global sim value.
 - `adc.setCode(ch, code)` drives a raw 12-bit code (0..4095) via the same routing.
-- Completion is observed via `mcu.onAdcDone = (adc, ch) => …`.
+- Completion is observed via `mcu.onAdcDone = (adc, ch) => …` — `adc` is the
+  ADC number (1..3), `ch` the converted channel. Notes: the pin wire is
+  shared, so every ADC sampling the same pin converts the same voltage
+  (ADC1/ADC2 lockstep included); the 16-18 internal override is chip-global
+  (one override serves all ADCs — real silicon wires the temp sensor to
+  ADC1 only, VREFINT to ADC1/ADC2).
 
 ```js
 // Hold PA0 (ADC1 channel 0) at mid-scale ≈ 1.65 V, then run the firmware
@@ -155,10 +160,18 @@ mcu.adc1.setCode(16, 4095);
   and the RCC clock tree (APB x2 rule included). Both report 0 unless the
   counter runs (CR1 CEN) — a stopped timer has no output.
 - Update/overflow edges are observed via `mcu.onTimUpdate = (tim) => …`.
+- `tim.pin(ch)` → which board pin carries channel `ch` (0-based), with the
+  live AFIO remap applied — e.g. `{ port: 'A', pin: 6 }` for TIM3 CH1 by
+  default — or `null` when the timer/channel has no output pin (basic
+  timers TIM6/7, out-of-range channels). Read-only; for wiring PWM outputs
+  (servo/LED/buzzer) to the right component pin without duplicating the
+  remap table. Raw form: `emu.timChanPin(timer, ch)` → packed
+  `(port << 4 | pin)` (port 0=A..3=D), or -1.
 
 ```js
 // Read back the servo PWM the firmware programs on TIM3 CH1 (PA6)
 console.log('duty:', mcu.tim3.duty(0), 'freq:', mcu.tim3.frequency(), 'Hz');
+console.log('pin:', mcu.tim3.pin(0)); // { port: 'A', pin: 6 }
 ```
 
 ## Virtual-peripheral events (Wokwi-style)
@@ -193,6 +206,36 @@ mcu.i2c1.onStop  = () => console.log('STOP');
 
 // Inject RX bytes the MCU reads during master-receiver transactions:
 mcu.i2c1.injectRx([0x12, 0x34]);
+```
+
+A JS-only slave (no `i2c_eeprom`/`i2c_oled` at the address) is a supported
+configuration with one rule: the **first address phase served from a
+non-empty inject queue registers that address to the host and ACKs**
+(ADDR like a real slave; master-TX bytes still surface as `onWrite`). The
+registration is sticky across START/STOP and queue drains -- a real slave
+does not un-address itself when its TX buffer is momentarily empty, so a
+cleared or drained queue still ACKs a registered address (reads serve 0xFF
+while dry). Only an address no host ever served NACKs (AF), preserving
+bus-scan and error semantics. Prefill the whole response **before** the transfer starts
+(the queue is consumed as bytes clock out; per-`onRead` refills arrive too
+late — there is no clock-stretching), and keep it non-empty across the
+pointer-write when the read follows in the same session. Alternatively,
+register an `i2c_eeprom` ACK-sink at the address and let queued bytes take
+precedence for the data.
+
+Reactive runners (refill per `onRead` / at read-START from a just-drained
+pointer model) must `clearRx()` before prefilling: the queue is append-only
+with return-to-front, so stale leftovers from previous transactions poison
+the front and coarse execute batches can never drain-then-fill atomically.
+`clearRx()` then `injectRx(fresh)` at read-START makes every transaction
+exact regardless of batch timing (raw form: `emu.i2cClearRx(ch)`).
+
+```js
+// Deterministic sensor read: pointer already drained into the model,
+// so drop the previous transaction's leftovers, then prefill exact.
+mcu.i2c1.onStart = (addr) => {
+  if (readStarting(addr)) { mcu.i2c1.clearRx(); mcu.i2c1.injectRx(modelBytes(32)); }
+};
 ```
 
 ### USART — `mcu.usartN.onData`

@@ -533,6 +533,16 @@ export function has_pending_interrupt() {
 }
 
 /**
+ * Drop all queued injected RX bytes for an I2C channel. Reactive runners
+ * clear-then-prefill at read-START so stale leftovers never poison the
+ * front (empty queue still NACKs the address phase, as before).
+ * @param {number} channel
+ */
+export function i2c_clear_rx(channel) {
+    wasm.i2c_clear_rx(channel);
+}
+
+/**
  * SMBus ALERT input: peer pulled SMBA low on this channel → SR1 SMBALERT
  * flag (+ error IRQ when ITERREN). Returns false when disabled/no channel.
  * @param {number} channel
@@ -1313,6 +1323,21 @@ export function swd_take_trip() {
 
 export function tick() {
     wasm.tick();
+}
+
+/**
+ * PWM output pin for a timer channel (1-based timer number, 0-based
+ * channel): packed (port << 4 | pin) with the live AFIO remap applied
+ * (port 0=A .. 3=D), or -1 when the timer/channel has no output pin.
+ * E.g. tim_chan_pin(3, 0) = 0x06 (PA6) by default. Read-only observation
+ * helper for servo/LED/buzzer wiring; -1 before init too.
+ * @param {number} timer
+ * @param {number} channel
+ * @returns {number}
+ */
+export function tim_chan_pin(timer, channel) {
+    const ret = wasm.tim_chan_pin(timer, channel);
+    return ret;
 }
 
 /**

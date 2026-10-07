@@ -629,6 +629,14 @@ pub fn i2c_inject_rx(channel: u8, bytes: &[u8]) {
     if let Some(sys) = try_sys() { sys.i2c_inject_rx(channel, bytes); }
 }
 
+/// Drop all queued injected RX bytes for an I2C channel. Reactive runners
+/// clear-then-prefill at read-START so stale leftovers never poison the
+/// front (empty queue still NACKs the address phase, as before).
+#[wasm_bindgen]
+pub fn i2c_clear_rx(channel: u8) {
+    if let Some(sys) = try_sys() { sys.i2c_clear_rx(channel); }
+}
+
 /// Host-side I2C slave transactions: address this peripheral as a slave
 /// from an external host (see `I2C1`/`I2C2` slave docs). Start NACKs when
 /// the peripheral is disabled/busy/unmatched; write NACKs when not in
@@ -724,6 +732,19 @@ pub fn rcc_mco_hz() -> u32 {
 #[wasm_bindgen]
 pub fn pwm_duty(addr: u32, channel: u32) -> u32 {
     sys().p.pwm_duty(addr, channel)
+}
+
+/// PWM output pin for a timer channel (1-based timer number, 0-based
+/// channel): packed (port << 4 | pin) with the live AFIO remap applied
+/// (port 0=A .. 3=D), or -1 when the timer/channel has no output pin.
+/// E.g. tim_chan_pin(3, 0) = 0x06 (PA6) by default. Read-only observation
+/// helper for servo/LED/buzzer wiring; -1 before init too.
+#[wasm_bindgen]
+pub fn tim_chan_pin(timer: u8, channel: u8) -> i32 {
+    match try_sys() {
+        Some(sys) => sys.p.tim_chan_pin(timer as u32, channel as u32),
+        None => -1,
+    }
 }
 
 #[wasm_bindgen]
