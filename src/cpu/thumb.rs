@@ -573,6 +573,18 @@ fn fused_tail_bx(
     fused_branch_done(cpu, b, o2, pc, pc2)
 }
 
+// ---- v4 tails: SP-relative second-ops (word-size; the alleged halfword
+// pair turned out to be SP-relative — 0x90/0x98, verified via Capstone) ----
+fn fused_tail_ldrsp(cpu: &mut Cpu, _sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let rt2 = ((o2 >> 8) & 7) as usize;
+    cpu.regs.r[rt2] = mem.read32(cpu.regs.r[13].wrapping_add((o2 & 0xFF) * 4));
+    adv(cpu, pc, 4);
+    2
+}
+
 // ---- v2 fused pairs (first-body verbatim from its arm + shared tail) ----
 fn fused_str_ldri(
     cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
@@ -718,6 +730,67 @@ fn fused_subsi_cmp(
     let im = (o1 >> 6) & 7;
     let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1); cpu.regs.r[rd] = r;
     fused_tail_cmp(cpu, sys, mem, o2, pc)
+}
+
+// ---- v4 fused pairs (tail sweep: leftovers with measured weight) ----
+// A: (LDR-imm, STR-imm) — skipped in v2 at 137 static, vindicated by the
+// dynamic census at 2.3% coremark. Uses the shared STR tail.
+fn fused_ldri_str(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_str(cpu, sys, mem, o2, pc)
+}
+
+// B: (PUSH, HI-MOV) — save regs then shuffle (~350 static).
+fn fused_push_himov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let list = o1 & 0xFF;
+    let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
+    let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
+    cpu.regs.r[13] = sp;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            mem.write32(sp, cpu.regs.r[i as usize]);
+            sp += 4;
+        }
+    }
+    if o1 & 0x100 != 0 {
+        mem.write32(sp, cpu.regs.r[14]);
+    }
+    fused_tail_himov(cpu, sys, mem, o2, pc)
+}
+
+// C: (PUSH, LDR-imm) — save regs then fill (~170 static).
+fn fused_push_ldri(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let list = o1 & 0xFF;
+    let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
+    let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
+    cpu.regs.r[13] = sp;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            mem.write32(sp, cpu.regs.r[i as usize]);
+            sp += 4;
+        }
+    }
+    if o1 & 0x100 != 0 {
+        mem.write32(sp, cpu.regs.r[14]);
+    }
+    fused_tail_ldri(cpu, sys, mem, o2, pc)
+}
+
+// D: (STR-sp, LDR-sp) — stack spill/fill (~450 static, ex-halfword).
+fn fused_strsp_ldrsp(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rt = ((o1 >> 8) & 7) as usize;
+    mem.write32(cpu.regs.r[13].wrapping_add((o1 & 0xFF) * 4), rr(cpu, rt, pc));
+    fused_tail_ldrsp(cpu, sys, mem, o2, pc)
 }
 
 // ---- v3 fused pairs (dynamic-census driven; same fallback discipline) ----
@@ -1046,6 +1119,10 @@ pub fn exec16(
         if cpu.it_n == 0 && is_bx_shape(q) && fusion_live() {
             return fused_ldri_bx(cpu, sys, mem, o, q, pc);
         }
+        // v4 fusion: (LDR-imm, STR-imm) load-then-spill (2.3% coremark).
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6000 && fusion_live() {
+            return fused_ldri_str(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
         cpu.regs.r[rt] = mem.read32(addr);
@@ -1252,6 +1329,13 @@ pub fn exec16(
         // PUSH never branches, so the fallthrough is the only path.
         if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
             return fused_push_lit(cpu, sys, mem, o, q, pc);
+        }
+        // v4 fusion: (PUSH, HI-MOV) and (PUSH, LDR-imm) prologue pairs.
+        if cpu.it_n == 0 && is_himov(q) && fusion_live() {
+            return fused_push_himov(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
+            return fused_push_ldri(cpu, sys, mem, o, q, pc);
         }
         let list = o & 0xFF;
         let nl = list.count_ones() + if o & 0x100 != 0 { 1 } else { 0 };
@@ -1475,6 +1559,10 @@ pub fn exec16(
     }
     // SP-relative + ADR
     if o & 0xF800 == 0x9000 {
+        // v4 fusion: (STR-sp, LDR-sp) stack spill/fill.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x9800 && fusion_live() {
+            return fused_strsp_ldrsp(cpu, sys, mem, o, q, pc);
+        }
         let rt = ((o >> 8) & 7) as usize;
         mem.write32(cpu.regs.r[13].wrapping_add((o & 0xFF) * 4), rr(cpu, rt, pc));
         adv(cpu, pc, 2);

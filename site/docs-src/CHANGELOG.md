@@ -114,6 +114,17 @@ All notable changes to this project will be documented in this file.
   A/B (v1+v2+v3 on vs off): oled +20%, showcase +19%, coremark +18%,
   periph +23%, dfu +5% — coremark's jump (+4% to +18%) is the HI/CMP-reg
   pairs landing. Nothing regresses.
+- Superoperators v4 (tail sweep, 4 pairs): (LDR-imm,STR-imm) — skipped in
+  v2 at 137 static, vindicated dynamically at 2.3% coremark; (PUSH,HI-MOV)
+  ~350 + (PUSH,LDR-imm) ~170 static; (STR-sp,LDR-sp) ~450 static (the
+  alleged halfword pair turned out to be SP-relative word ops — true
+  halfword pairs total ~2 static, dropped on evidence, as was the
+  3-static reverse). Reuses existing tails (+2 tiny SP tails). In-binary
+  A/B shows no separately measurable delta (within box noise: oled
+  +22%, showcase +21%, coremark +18%, periph +22%, dfu +5%) — kept on
+  proof-of-safety (4 new differential suites, 40/40 fused green) +
+  measured pair weight, not on a resolution-limited ratio. Proof: lib
+  120/120; census + fuzz green; all behavior gates green.
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

@@ -775,6 +775,11 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   advanced — the differential caught a post-fault r15 gap). Proof: 12
   new suites (~150K cases), lib 116/116, census + fuzz green. In-binary
   A/B: oled +20%, showcase +19%, coremark +18%, periph +23%, dfu +5%.
+- **Superoperators v4 (follow-up, same sprint)**: tail sweep — (LDR,STR)
+  (vindicated dynamically), (PUSH,HI-MOV), (PUSH,LDR), (STR-sp,LDR-sp);
+  halfwords dropped on evidence (~2 static). No separate measurable
+  delta (box noise) — kept on safety proof + pair weight. 40/40 fused,
+  lib 120/120, all gates green.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

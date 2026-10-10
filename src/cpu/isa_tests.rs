@@ -835,7 +835,8 @@ fn fused_it_fallback_matches_legacy() {
     // v2 pairs exercise the same it_n == 0 gate in every new first-arm.
     for flags in [0x00000000u32, 0x80000000] {
         for op_pair in [(0x42A3u16, 0xD101u16), (0x6019u16, 0x6821u16), (0x2001u16, 0xE7FEu16), (0x4802u16, 0x4903u16),
-            (0x4283u16, 0xD101u16), (0xB214u16, 0xD101u16), (0xB508u16, 0x4903u16), (0xBD08u16, 0x0000u16), (0x4621u16, 0x4628u16)] {
+            (0x4283u16, 0xD101u16), (0xB214u16, 0xD101u16), (0xB508u16, 0x4903u16), (0xBD08u16, 0x0000u16), (0x4621u16, 0x4628u16),
+            (0xB508u16, 0x6811u16), (0x9001u16, 0x9802u16)] {
             let mut out = Vec::new();
             for fused in [true, false] {
                 super::thumb::fusion_off(!fused);
@@ -1492,4 +1493,77 @@ fn fused3_ext_bcc_matches_legacy() {
     } } }
     assert!(taken > 100 && untaken > 100);
     assert!(n == 8192);
+}
+
+// ---- Superoperator v4 differential (tail sweep leftovers) ----
+fn op_strsp(rt: usize, imm8: u32) -> u16 {
+    0x9000 | (((rt & 7) as u16) << 8) | ((imm8 & 0xFF) as u16)
+}
+fn op_ldrsp(rt: usize, imm8: u32) -> u16 {
+    0x9800 | (((rt & 7) as u16) << 8) | ((imm8 & 0xFF) as u16)
+}
+
+#[test]
+fn fused4_ldri_str_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_ldri(rn1, rt1, i5), op_str(rn2, rt2, j5),
+                &[scratch(rn1), scratch(rn2)], 0, 0x8000 + (n & 0xFFFF), "ldri-str");
+            n += 1;
+        } } }
+    } } }
+    assert!(n == 16384);
+}
+
+#[test]
+fn fused4_push_himov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &list in &[0u32, 0x008, 0x038, 0x0F0, 0x0FF] {
+        for &lr in &[0u32, 0x100] {
+            for rd2 in 0..16 { for rs2 in [0, 1, 2, 3, 4, 5, 6, 7, 15] {
+                check_pair(sys, op_push(list | lr), op_himov(rd2, rs2), &[], 0, 0x8100 + (n & 0xFFFF), "push-himov");
+                n += 1;
+            } }
+        }
+    }
+    assert!(n == 1440);
+}
+
+#[test]
+fn fused4_push_ldri_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &list in &[0u32, 0x008, 0x038, 0x0F0, 0x0FF] {
+        for &lr in &[0u32, 0x100] {
+            for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+                check_pair(sys, op_push(list | lr), op_ldri(rn2, rt2, j5), &[scratch(rn2)], 0, 0x8200 + (n & 0xFFFF), "push-ldri");
+                n += 1;
+            } } }
+        }
+    }
+    assert!(n == 1280);
+}
+
+#[test]
+fn fused4_strsp_ldrsp_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rt1 in 0..8 { for &imm8 in &[0u32, 1, 63, 255] {
+        for rt2 in 0..8 { for &imm8b in &[0u32, 1, 63, 255] {
+            check_pair(sys, op_strsp(rt1, imm8), op_ldrsp(rt2, imm8b), &[], 0, 0x8300 + n, "strsp-ldrsp");
+            n += 1;
+        } }
+    } }
+    assert!(n == 1024);
 }
