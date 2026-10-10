@@ -748,6 +748,13 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   re-run with counter-free binaries on both sides is the trustworthy one.
   Same-process interleaving + verified binary provenance are now the
   documented bar — see the box-load note below.)
+- Build-staleness discipline (burned a turn on 2026-10-11): `cargo check`
+  finishing in 0.02s and `pkg/` mtime updates prove NOTHING (bindgen/opt
+  happily re-emit from a stale rlib when fingerprints misfire) — after
+  every wasm-affecting edit, `cargo clean -p stm32-bluepill-wasm` +
+  rebuild and require the md5 to CHANGE vs pre-edit; identical md5 with
+  changed source means a stale build, full stop. Record md5 + tree-state
+  for every measurement binary.
 - **Superoperators v1 (follow-up, same sprint)**: 4 fused 16-bit pairs
   (LDRlit+LDR, SUBreg+CMP-reg, CMP-imm+Bcc, LSL-imm+Bcc) via an `o2n`
   lookahead; shape-only guards inside the first arm (`it_n==0` fallback,
