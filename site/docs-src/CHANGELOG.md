@@ -140,6 +140,21 @@ All notable changes to this project will be documented in this file.
   floor**. Batch-size sweep: 20K vs 100K batches identical at 39/39
   (3.30 vs 3.31s), 500K breaks 2 checks — per-batch stepping costs ~0%,
   20K stays. Remainder is op bodies + loop scaffolding (~70%+).
+- Phase 1 decode table (`src/cpu/thumb.rs`): the 40-arm exec16 if-chain is
+  now `classify16()` (order-preserved, bodies replaced by tags) filling a
+  64KB direct-mapped table once via OnceLock; exec16 matches the tag
+  (`br_table`) with bodies moved verbatim (fusion checks travel with
+  them). Decode is a pure function of opcode bits, so the table needs no
+  invalidation — SMC-safe by construction. Top-5 hot firsts skip the
+  table via `fast_tag()` (proven equal to classify16 on all 65,536
+  opcodes by `fast_tag_matches_classify`); the table load uses
+  `get_unchecked` (sound: u16 index into 65536 entries — measured ~2% on
+  tight loops vs the bounds-checked load). 32-bit path untouched (<2.5%
+  of code). In-binary A/B vs the chain: oled +14%, showcase +13%,
+  coremark +5–8%, dfu +7–8%, periph39 flat (already fusion-saturated) —
+  kept (strictly non-negative everywhere). Proof: lib 121/121, census
+  0-gap both widths, fuzz seeds 1+4 zero divergences, all behavior gates
+  green on the ship binary.
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

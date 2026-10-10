@@ -785,6 +785,11 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   dispatch ~20–25% via fusion response ⇒ decode-table alone caps ~+25%
   on dfu — Phase 2 mandatory, Phase 1 justified for periph-likes. Batch
   sweep: 20K≡100K, 500K breaks 2 checks ⇒ stepping ~0%, 20K stays.
+- **Phase 1 decode table**: 40-arm chain → classify + 64KB table +
+  br_table executor (bodies verbatim, no invalidation needed); top-5
+  fast-path tags (65K-exhaustive proof) + unchecked load. A/B: oled
+  +14%, showcase +13%, coremark +5–8%, dfu +7–8%, periph flat. lib
+  121/121, census + fuzz green, all gates green.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

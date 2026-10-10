@@ -1567,3 +1567,19 @@ fn fused4_strsp_ldrsp_matches_legacy() {
     } }
     assert!(n == 1024);
 }
+
+/// Fast-path tag shortcut proof: fast_tag(o) agrees with classify16(o) on
+/// all 65,536 opcodes (None counts as "table serves it", which is filled
+/// from classify16 by construction). Guards the chain-order subtlety
+/// (SVC/UDF precede Bcc) against future edits.
+#[test]
+fn fast_tag_matches_classify() {
+    let _held = crate::test_util::lock();
+    for o in 0..65536u32 {
+        let want = super::thumb::classify16(o);
+        match super::thumb::fast_tag(o) {
+            Some(t) => assert_eq!(t, want, "fast_tag/classify disagree at {:04x}", o),
+            None => {}
+        }
+    }
+}
