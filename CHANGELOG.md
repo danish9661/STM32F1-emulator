@@ -37,6 +37,43 @@ All notable changes to this project will be documented in this file.
   below 0x40000000 with one compare (the whole fetch/RAM path); region-hit
   loads/stores use `get_unchecked` (containment proven by the resolve, so
   sound — removes a bounds check per byte).
+- Fused wide fetch + frequency-ordered dispatch (`src/cpu/mod.rs`,
+  `src/cpu/thumb.rs`): `run()` resolves one `fetch32_raw` region per
+  iteration instead of two halfword fetches (exact fallback at edges and
+  peripheral windows); exec16's 40-arm `if`-chain reordered by measured
+  arm frequencies (HI/BLX, Bcc, LDRlit, LDR first; SVC/UDF pinned before
+  Bcc — the only order constraint, proven by exhaustive 65K-opcode
+  simulation with 0 diffs). Clean interleaved A/B vs legacy fetch +
+  ascending order (15 reps, both binaries counter-free, quartiles):
+  oled +30%, compute +25%, showcase +31%, coremark +18%, dfu +13%,
+  spixfer +8% — every quartile above 1.0. Kept combined (their V8 loop
+  shape compounds beyond either alone).
+- Superoperators v1 (`src/cpu/thumb.rs`, `src/cpu/{mod,census}.rs`):
+  four fused 16-bit pairs — (LDRlit,LDR-imm), (SUBreg,CMP-reg),
+  (CMP-imm,Bcc), (LSL-imm,Bcc) — sharing one `fetch32_raw` fetch via an
+  `o2n` lookahead threaded through `exec16`. Guards are shape-only and
+  checked inside the first arm (incl. `it_n == 0` fallback and the
+  DF00/DE00 SVC/UDF exclusion inside Bcc's range, so traps never fuse);
+  fused bodies copy the legacy arms verbatim (same mem calls, so
+  MPU/watch slow paths are covered by construction) with a single pc+4
+  advance. `exec16`/`exec32`/`branch`/`fault` now return guest counts
+  (0/1/2) and `run()` credits `done += n` — the differential caught this
+  live (first fused build credited 1 per pair and drifted one instr per
+  fusion). Proof: 5 native differential suites (~65K pair-cases: full
+  reg/imm/cc/flags cubes, taken+untaken, overlapping regs, IT-block
+  fallback) run fused-vs-`fusion_off` and compare full state
+  (regs/xpsr/fault/RAM-hash/bad-addr) — all green; census gates still
+  0-gap both widths; fuzz seeds 1+4 still 0 divergences. In-binary A/B
+  (same wasm, templates on vs off via a temporary export, since removed):
+  oled +14%, showcase +16%, coremark +5%, dfu +3% — first-op dispatch is
+  gone, one advance instead of two.
+- Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
+  via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
+  default `-O`: spixfer +4%, showcase +6%, compute +12%, measured
+  same-process interleaved) and rustc `opt-level = 3` (was `s`: +3-16%,
+  dfu +16%). Binary grows ~1.27MB -> ~1.42MB pre-gzip. Both flow through
+  the pinned `wasm-pack@0.14.0` + `binaryen-version_132` path, so CI
+  reproduces the checked-in wasm byte-exact.
 - Custom-firmware floor (the actual ask: arbitrary user sketches, not just
   shipped ELFs): six arduino-cli sketches (compute loop, GPIO bit-bang,
   UART spam, I2C scan timeouts, SPI transfers, ADC+delay) measured
@@ -44,6 +81,8 @@ All notable changes to this project will be documented in this file.
   (spixfer worst at 62, UART-heavy included) — the browser JIT runs the
   same wasm faster than Node here, with warmup. No firmware-specific hacks;
   all gains are in the shared interpreter/memory layer.
+  Post-toolchain (-O3 + rustc-O3): custom 62-72 headless / **72-115 in
+  Chromium**; shipped 59-114 headless; periph39 111-112 in Chromium.
 - Evaluated and REVERTED: single-entry data-read cache for polled registers
   (generation counter + denylist + ~40 invalidation sites). Interleaved A/B
   (both binaries in one process, alternating windows) measured it exactly

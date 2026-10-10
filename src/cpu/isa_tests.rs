@@ -593,3 +593,261 @@ fn bcc_w_backward_s1() {
 
 
 
+
+// ---- Superoperator differential: fused pairs vs legacy sequential ------
+// Each template below runs the SAME snippet twice — once with fusion armed
+// (production path) and once with FUSION_OFF (legacy dispatch) — and asserts
+// full machine-state equality (regs incl. SP/LR/PC, xpsr incl. IT bits,
+// fault record, scratch RAM hash, bad-address diagnostic). Any guard bug
+// (false positive on traps/reserved shapes) or handler bug (wrong flags,
+// regs, memory, pc) fails loudly. MPU/watch-armed paths are covered by
+// construction: fused handlers call the same mem.read32/mem.write32 the
+// legacy arms call, which self-route to the exact slow paths when armed.
+
+fn xorshift(s: &mut u32) -> u32 {
+    let mut x = *s;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *s = x;
+    x
+}
+
+struct Snap {
+    regs: [u32; 16],
+    xpsr: u32,
+    fault: Option<(u32, u16, u16, u8)>,
+    ram_hash: u64,
+    bad: Option<u32>,
+}
+
+fn snap_of(cpu: &Cpu, mem: &FlatMemory) -> Snap {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for a in (0x20003000..0x20003100).step_by(4) {
+        h ^= mem.read32(a) as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    Snap {
+        regs: cpu.regs.r,
+        xpsr: cpu.regs.xpsr,
+        fault: cpu.fault.as_ref().map(|f| (f.pc, f.op1, f.op2, f.len)),
+        ram_hash: h,
+        bad: mem.bad.get(),
+    }
+}
+
+fn snap_eq(a: &Snap, b: &Snap) -> bool {
+    a.regs == b.regs && a.xpsr == b.xpsr && a.fault == b.fault && a.ram_hash == b.ram_hash && a.bad == b.bad
+}
+
+/// Run one [op1, op2] pair snippet both ways. Layout at 0x20002000:
+/// [op1, op2, b.n self, b.n self, 12 literal pads]; LDRlit immediates are
+/// capped so literals land in the pads; LDR bases point at scratch RAM
+/// (0x20003000, seeded). Returns the two snapshots.
+fn run_pair_both(
+    sys: &crate::system::WasmSystem,
+    op1: u16,
+    op2: u16,
+    regs78: &[(usize, u32)],
+    flags: u32,
+    seed: u32,
+) -> (Snap, Snap) {
+    let mut out = Vec::new();
+    for fused in [true, false] {
+        super::thumb::fusion_off(!fused);
+        let mut cpu = Cpu::new(0x20008000, 0x20002001);
+        cpu.dsp = false;
+        cpu.deliver_irqs = false;
+        let mut mem = FlatMemory::new(0x1000, 0x10000);
+        let mut code = vec![op1, op2, 0xE7FE, 0xE7FE];
+        let mut s = seed;
+        for _ in 0..12 {
+            code.push((xorshift(&mut s) & 0xFFFF) as u16);
+        }
+        for (i, w) in code.iter().enumerate() {
+            mem.write16(0x20002000 + (i as u32) * 2, *w);
+        }
+        for r in 0..8 {
+            cpu.regs.r[r] = xorshift(&mut s);
+        }
+        for r in 8..13 {
+            cpu.regs.r[r] = 0xAA000000 + (r as u32);
+        }
+        cpu.regs.r[14] = 0xDEADBEEF;
+        for &(r, v) in regs78 {
+            cpu.regs.r[r] = v;
+        }
+        cpu.regs.xpsr = (cpu.regs.xpsr & !0xF0000000) | (flags & 0xF0000000);
+        s = seed ^ 0x9E3779B9;
+        for a in (0x20003000..0x20003100).step_by(2) {
+            mem.write16(a, (xorshift(&mut s) & 0xFFFF) as u16);
+        }
+        cpu.run(sys, &mut mem, 8);
+        out.push(snap_of(&cpu, &mem));
+    }
+    super::thumb::fusion_off(false);
+    (out.remove(0), out.remove(0))
+}
+
+fn check_pair(sys: &crate::system::WasmSystem, op1: u16, op2: u16, regs: &[(usize, u32)], flags: u32, seed: u32, what: &str) {
+    let (a, b) = run_pair_both(sys, op1, op2, regs, flags, seed);
+    assert!(snap_eq(&a, &b), "fused/legacy diverge for {}: op1={:04x} op2={:04x}", what, op1, op2);
+}
+
+/// Fused (LDRlit, LDR-imm): rt1 x imm8 x rn2 x rt2 x imm5, overlapping
+/// registers included (rt1 == rn2 / rt2), literals + RAM seeded.
+#[test]
+fn fused_ldr_ldr_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rt1 in 0..8 {
+        for &imm8 in &[0u32, 1, 2, 3] {
+            for rn2 in 0..8 {
+                for rt2 in 0..8 {
+                    for &imm5 in &[0u32, 31] {
+                        // scratch base for rn2 (4-aligned), distinct per rn2
+                        let base = 0x20003000 + (rn2 as u32) * 16;
+                        let op1 = 0x4800 | ((rt1 as u16) << 8) | (imm8 as u16);
+                        let op2 = 0x6800 | ((imm5 as u16) << 6) | ((rn2 as u16) << 3) | (rt2 as u16);
+                        check_pair(sys, op1, op2, &[(rn2, base)], 0, 0x1000 + n, "ldr-ldr");
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(n > 2000);
+}
+
+/// Fused (SUBreg, CMP-reg): full rd/rs/rn cube x CMP rs2/rd2 subset x flags.
+#[test]
+fn fused_sub_cmp_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd in 0..8 {
+        for rs in 0..8 {
+            for rn in 0..8 {
+                for rs2 in 0..4 {
+                    for rd2 in 0..4 {
+                        for &flags in &[0x00000000u32, 0xF0000000, 0x20000000, 0x60000000] {
+                            let op1 = 0x1A00 | ((rn as u16) << 6) | ((rs as u16) << 3) | (rd as u16);
+                            // CMP-reg: ALU arm, sop == 10
+                            let op2 = 0x4000 | (10u16 << 6) | ((rs2 as u16) << 3) | (rd2 as u16);
+                            check_pair(sys, op1, op2, &[], flags, 0x2000 + n, "sub-cmp");
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(n > 30000);
+}
+
+/// Fused (CMP-imm, Bcc): rn x imm x cc (ALL 16, incl. E/F with DF00/DE00
+/// trap shapes to prove the exclusion) x taken/untaken x flags.
+#[test]
+fn fused_cmp_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rn in 0..8 {
+        for &imm in &[0u32, 1, 127, 255, 0x80, 0x7F, 0xFE, 0x01] {
+            for cc in 0..16 {
+                for taken_case in [false, true] {
+                    for &flags in &[0x00000000u32, 0xF0000000, 0x20000000, 0x40000000, 0x80000000, 0x60000000, 0xA0000000, 0xC0000000] {
+                        let op1 = 0x2800 | ((rn as u16) << 8) | (imm as u16);
+                        // Bcc offset: reach the b-self landing (taken) or sail past (untaken via flags)
+                        let off: i32 = if taken_case { -4 } else { 100 };
+                        let o2 = if cc == 0xE {
+                            0xDE00 | ((off as u16) & 0xFF)
+                        } else if cc == 0xF {
+                            0xDF00 | ((off as u16) & 0xFF)
+                        } else {
+                            0xD000 | ((cc as u16) << 8) | ((off as u16) & 0xFF)
+                        };
+                        let (a, b) = run_pair_both(sys, op1, o2, &[], flags, 0x3000 + n);
+                        assert!(snap_eq(&a, &b), "fused/legacy diverge for cmp-bcc: {:04x} {:04x}", op1, o2);
+                        // Untaken parks in the b-self landing at +4; anything
+                        // else means the branch was taken (forward pads or
+                        // backward RAM zeros — both deterministic).
+                        if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(taken > 100 && untaken > 100, "must exercise both directions (taken={}, untaken={})", taken, untaken);
+    assert!(n > 15000);
+}
+
+/// Fused (LSL-imm, Bcc): rd x rs x imm5 (incl. 0/31 edges) x cc subset x
+/// taken/untaken x flags.
+#[test]
+fn fused_lsl_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd in 0..8 {
+        for rs in 0..8 {
+            for &imm5 in &[0u32, 1, 2, 15, 16, 30, 31, 5] {
+                for cc in [0u32, 1, 4, 14] {
+                    for taken_case in [false, true] {
+                        for &flags in &[0x00000000u32, 0xF0000000, 0x20000000, 0x80000000] {
+                            let op1 = ((imm5 as u16) << 6) | ((rs as u16) << 3) | (rd as u16);
+                            let off: i32 = if taken_case { -4 } else { 100 };
+                            let o2 = 0xD000 | ((cc as u16) << 8) | ((off as u16) & 0xFF);
+                            check_pair(sys, op1, o2, &[], flags, 0x4000 + n, "lsl-bcc");
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(n > 15000);
+}
+
+/// IT-block fallback: fused shapes inside an IT block take the legacy path
+/// both ways (suppression preserved exactly).
+#[test]
+fn fused_it_fallback_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    // ITE MI (0xBF0C): cmp then bne, first suppressed when N==0.
+    for flags in [0x00000000u32, 0x80000000] {
+        for op_pair in [(0x42A3u16, 0xD101u16)] {
+            let mut out = Vec::new();
+            for fused in [true, false] {
+                super::thumb::fusion_off(!fused);
+                let mut cpu = Cpu::new(0x20008000, 0x20002001);
+                cpu.dsp = false;
+                cpu.deliver_irqs = false;
+                let mut mem = FlatMemory::new(0x1000, 0x10000);
+                // IT(0xBF0C) at 0x20002000, pair at 0x20002002, landing pads.
+                let code = [0xBF0Cu16, op_pair.0, op_pair.1, 0xE7FE, 0xE7FE, 0xE7FE];
+                for (i, w) in code.iter().enumerate() {
+                    mem.write16(0x20002000 + (i as u32) * 2, *w);
+                }
+                cpu.regs.r[3] = 5;
+                cpu.regs.r[4] = 5;
+                cpu.regs.xpsr = (cpu.regs.xpsr & !0xF0000000) | (flags & 0xF0000000);
+                cpu.regs.r[15] = 0x20002001;
+                cpu.run(sys, &mut mem, 8);
+                out.push(snap_of(&cpu, &mem));
+            }
+            super::thumb::fusion_off(false);
+            assert!(snap_eq(&out[0], &out[1]), "IT fallback diverges at flags {:08x}", flags);
+        }
+    }
+}

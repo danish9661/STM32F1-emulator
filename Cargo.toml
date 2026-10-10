@@ -22,8 +22,20 @@ console_error_panic_hook = "0.1"
 svd-parser = "0.13"
 
 # The wasm module is shipped to a web page, so size is a user-visible cost.
+# opt-level 3 (not s): measured +3-16% over s on interpreter-heavy
+# firmware (dfu +16%, spixfer/uart +6-8%) — same-process interleaved A/B.
+# Costs ~12% binary size (~1.27MB -> ~1.42MB pre-gzip); safe opts only
+# (no SIMD target features, overflow checks already off in release).
 [profile.release]
-opt-level = "s"
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# wasm-opt level for the shipped binary (wasm-pack runs this after
+# wasm-bindgen; CI installs the same pinned binaryen, so the checked-in
+# wasm stays byte-reproducible). -O3 measured +4-11% over the default -O
+# on interpreter-heavy firmware with no size blowup that matters (~1.60MB
+# vs ~1.55MB) — same-process interleaved A/B, medians of 7 windows.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3"]

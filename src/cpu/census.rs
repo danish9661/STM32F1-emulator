@@ -47,8 +47,8 @@ fn sterile_mem() -> FlatMemory {
 fn classify16(op: u16, sys: &crate::system::WasmSystem) -> u8 {
     let mut cpu = sterile_cpu();
     let mut mem = sterile_mem();
-    let ok = thumb::exec16(&mut cpu, sys, &mut mem, op, 0x0800_0001);
-    if ok {
+    let n = thumb::exec16(&mut cpu, sys, &mut mem, op, 0x0800_0001, 0);
+    if n != 0 {
         return 0;
     }
     match op {
@@ -93,8 +93,8 @@ fn census_dump_32() {
             let op2 = (j * 257) & 0xFFFF;
             let mut cpu = sterile_cpu();
             let mut mem = sterile_mem();
-            let ok = thumb::exec32(&mut cpu, sys, &mut mem, first as u16, op2 as u16, 0x0800_0001);
-            out.push(if ok { '0' } else { '2' });
+            let n = thumb::exec32(&mut cpu, sys, &mut mem, first as u16, op2 as u16, 0x0800_0001);
+            out.push(if n != 0 { '0' } else { '2' });
             j += 1;
         }
         out.push('\n');

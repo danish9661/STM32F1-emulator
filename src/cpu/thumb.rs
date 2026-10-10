@@ -55,9 +55,10 @@ fn rr(c: &Cpu, n: usize, pc: u32) -> u32 {
 fn adv(c: &mut Cpu, pc: u32, l: u32) {
     c.regs.r[15] = pc.wrapping_add(l) | 1;
 }
-fn fault(c: &mut Cpu, pc: u32, op1: u16, op2: u16, l: u8) -> bool {
+
+fn fault(c: &mut Cpu, pc: u32, op1: u16, op2: u16, l: u8) -> u32 {
     c.fault = Some(super::CpuFault { pc, op1, op2, len: l });
-    false
+    0
 }
 /// Interworking branch. An EXC_RETURN value performs an exception return
 /// through the stacked context instead. Branching to ARM state (bit0
@@ -72,15 +73,15 @@ fn branch(
     op1: u16,
     op2: u16,
     l: u8,
-) -> bool {
+) -> u32 {
     if (t & 0x0FFFFFF0) == 0x0FFFFFF0 {
-        return c.exception_return(sys, mem, t, pc);
+        return c.exception_return(sys, mem, t, pc) as u32;
     }
     if t & 1 == 0 {
         return fault(c, pc, op1, op2, l);
     }
     c.regs.r[15] = t;
-    true
+    1
 }
 
 // ---- flags ----
@@ -263,8 +264,117 @@ fn shift_op(v: u32, typ: u32, amt: u32, ci: u32) -> (u32, u32) {
     }
 }
 
-pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc: u32) -> bool {
+
+/// Superoperator kill-switch (differential testing): when set, template
+/// checks never fire and every pair takes the legacy sequential path.
+/// Checked LAST in each guard chain (only on shape match), so production
+/// cost is ~zero. Tests run snippets both ways and compare full state.
+static FUSION_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn fusion_off(on: bool) {
+    FUSION_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn fusion_live() -> bool {
+    !FUSION_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Bcc-shape probe for fused seconds: Bcc but never SVC/UDF (DF00/DE00 live
+/// inside Bcc's range and are claimed by earlier arms — fusing them would
+/// execute a trap as a branch).
+#[inline(always)]
+fn is_bcc_shape(o2: u32) -> bool {
+    (o2 & 0xF000) == 0xD000 && (o2 & 0xFF00) != 0xDF00 && (o2 & 0xFF00) != 0xDE00
+}
+
+/// Fused (LDRlit, LDR-imm): two loads, no flags either way. Bodies copied
+/// verbatim from the two arms (sequential order preserved, so overlapping
+/// Rt/Rn resolve like silicon); single pc+4 advance. Callers guarantee:
+/// it_n == 0, o1 matches LDRlit, o2 matches LDR-imm5.
+fn fused_ldr_ldr(
+    cpu: &mut Cpu, _sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rt1 = ((o1 >> 8) & 7) as usize;
+    let base1 = (pc + 4) & !3;
+    cpu.regs.r[rt1] = mem.read32(base1.wrapping_add((o1 & 0xFF) * 4));
+    let (rn2, rt2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
+    let addr2 = rr(cpu, rn2, pc.wrapping_add(2)).wrapping_add(((o2 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt2] = mem.read32(addr2);
+    adv(cpu, pc, 4);
+    2
+}
+
+/// Fused (SUBreg, CMP-reg): flag-setting subtract, then a flag-only compare
+/// (result discarded, like the CMP arm). Callers guarantee it_n == 0 and
+/// both shapes (o2 = ALU arm with sop == 10).
+fn fused_sub_cmp(
+    cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rd, rs, rn) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize, ((o1 >> 6) & 7) as usize);
+    let r = sub_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 1);
+    cpu.regs.r[rd] = r;
+    let (rs2, rd2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
+    cpu.it_suppress = false; // mirror CMP arm (no-op under the it_n gate)
+    sub_flags(cpu, rr(cpu, rd2, pc.wrapping_add(2)), rr(cpu, rs2, pc.wrapping_add(2)), 1);
+    adv(cpu, pc, 4);
+    2
+}
+
+/// Shared Bcc tail for fused compare/branch pairs: pc2/o2 always describe
+/// the branch (pc+2 of the fused pair). Returns via branch() exactly like
+/// the Bcc arm (taken target, EXC_RETURN reshape, misaligned fault).
+fn fused_bcc_tail(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32,
+) -> u32 {
+    let cc = (o2 >> 8) & 0xF;
+    let imm = sx(((o2 & 0xFF) << 1) as u32, 9);
+    let pc2 = pc.wrapping_add(2);
+    if cond_ok(cpu, cc) {
+        // Branch completes the second op: 1 (first) + branch's 1, or 1 + 0
+        // when the branch itself stops (misaligned/EXC_RETURN fault).
+        return branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2) + 1;
+    }
+    adv(cpu, pc, 4);
+    2
+}
+
+/// Fused (CMP-imm, Bcc). Callers guarantee it_n == 0 and both shapes.
+fn fused_cmp_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rn = ((o1 >> 8) & 7) as usize;
+    cpu.it_suppress = false; // mirror CMP arm (no-op under the it_n gate)
+    sub_flags(cpu, rr(cpu, rn, pc), o1 & 0xFF, 1);
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
+/// Fused (LSL-imm, Bcc). Callers guarantee it_n == 0 and both shapes.
+fn fused_lsl_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rd, rs) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize);
+    let im = (o1 >> 6) & 0x1F;
+    let v = rr(cpu, rs, pc);
+    let (r, co) = shift_op(v, 0, im, carry(cpu));
+    cpu.regs.r[rd] = r;
+    nz(cpu, r);
+    if !cpu.it_suppress {
+        cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+    }
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
+pub fn exec16(
+    cpu: &mut Cpu,
+    sys: &WasmSystem,
+    mem: &mut FlatMemory,
+    op: u16,
+    pc: u32,
+    o2n: u16,
+) -> u32 {
     let o = op as u32;
+    let q = o2n as u32; // fusion lookahead (next halfword; 0 on edge fallback, matches nothing)
     // 16-bit data-processing (except CMP/CMN/TST) must not update APSR inside
     // an IT block (verified against silicon behavior via the availableForWrite
     // spin). Capture predication BEFORE it_ok() runs: it clears it_n on the
@@ -275,123 +385,97 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc
     // purposes (and still consumes its IT slot).
     if !it_ok(cpu) {
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    // LSL/LSR/ASR imm, ADD/SUB reg+imm3 (all flag-setting)
-    if o & 0xF800 == 0x0000 {
-        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
-        let im = (o >> 6) & 0x1F;
-        let v = rr(cpu, rs, pc);
-        let (r, co) = shift_op(v, 0, im, carry(cpu));
-        cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        if !cpu.it_suppress {
-            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+    // high-register ops + BX/BLX (op select is bits[9:8])
+    if o & 0xFC00 == 0x4400 {
+        let h = (o >> 8) & 3;
+        let rs = ((o >> 3) & 0xF) as usize;
+        let rd = ((o & 7) | ((o >> 4) & 8)) as usize;
+        match h {
+            0 => {
+                let r = rr(cpu, rd, pc).wrapping_add(rr(cpu, rs, pc));
+                if rd == 15 {
+                    return branch(cpu, sys, mem, r, pc, op, 0, 2);
+                }
+                cpu.regs.r[rd] = r;
+            }
+            1 => {
+                cpu.it_suppress = false; // T1 CMP always updates flags.
+                sub_flags(cpu, rr(cpu, rd, pc), rr(cpu, rs, pc), 1);
+            }
+            2 => {
+                let v = rr(cpu, rs, pc);
+                if rd == 15 {
+                    return branch(cpu, sys, mem, v, pc, op, 0, 2);
+                }
+                cpu.regs.r[rd] = v;
+            }
+            _ => {
+                let t = rr(cpu, rs, pc);
+                if o & 0x80 != 0 {
+                    // BLX reg: bits[2:0] are reserved 000 on Cortex-M3
+                    // (v8-M blxns space) — validate BEFORE writing LR, or
+                    // a faulting BLX corrupts LR (differential fuzz: LR
+                    // written, oracle faults cleanly). Target must stay
+                    // Thumb (branch faults even targets like HW).
+                    if o & 7 != 0 {
+                        return fault(cpu, pc, op, 0, 2);
+                    }
+                    // BLX reg: LR = next addr; target must stay Thumb
+                    cpu.regs.r[14] = (pc + 2) | 1;
+                }
+                return branch(cpu, sys, mem, t, pc, op, 0, 2);
+            }
         }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    if o & 0xF800 == 0x0800 {
-        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
-        let mut im = (o >> 6) & 0x1F;
-        if im == 0 {
-            im = 32;
-        }
-        let v = rr(cpu, rs, pc);
-        let (r, co) = shift_op(v, 1, im, carry(cpu));
-        cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        if !cpu.it_suppress {
-            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+    // SVC: synchronous exception. With delivery on, take it inline (exact
+    // stacking, handler runs on MSP); otherwise loud fault (polling
+    // firmware never SVCs, so hitting one is a bug worth surfacing).
+    // The active-priority push balances exception_return's pop, including
+    // an SVC taken inside a handler (nested).
+    if o & 0xFF00 == 0xDF00 {
+        if !cpu.deliver_irqs {
+            return fault(cpu, pc, op, 0, 2);
         }
         adv(cpu, pc, 2);
-        return true;
+        sys.p.nvic.borrow_mut().push_active(-5);
+        cpu.take_exception(sys, mem, -5);
+        return 1;
     }
-    if o & 0xF800 == 0x1000 {
-        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
-        let mut im = (o >> 6) & 0x1F;
-        if im == 0 {
-            im = 32;
+    if o & 0xFF00 == 0xDE00 {
+        return fault(cpu, pc, op, 0, 2);
+    }
+    // B.cond / B (base is pc+4: Thumb PC reads as addr+4)
+    if o & 0xF000 == 0xD000 {
+        let cc = (o >> 8) & 0xF;
+        let imm = sx(((o & 0xFF) << 1) as u32, 9);
+        if cond_ok(cpu, cc) {
+            return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(imm)) | 1, pc, op, 0, 2);
         }
-        let v = rr(cpu, rs, pc);
-        let (r, co) = shift_op(v, 2, im, carry(cpu));
-        cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        if !cpu.it_suppress {
-            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // LDR literal
+    if o & 0xF800 == 0x4800 {
+        // Fused (LDRlit, LDR-imm): common literal-then-field double load.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
+            return fused_ldr_ldr(cpu, sys, mem, o, q, pc);
         }
+        let rt = ((o >> 8) & 7) as usize;
+        let base = (pc + 4) & !3;
+        cpu.regs.r[rt] = mem.read32(base.wrapping_add((o & 0xFF) * 4));
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    if o & 0xFE00 == 0x1800 {
-        // ADD (register) T1 sets flags (GAS assembles `adds` here; objdump
-        // prints predicated uses as `add*`). Do NOT "fix" this to preserve
-        // flags — that regressed strcasecmp/title (Z lost, early return).
-        let (rd, rs, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize, ((o >> 6) & 7) as usize);
-        let r = add_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 0);
-        cpu.regs.r[rd] = r;
+    if o & 0xF800 == 0x6800 {
+        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
+        cpu.regs.r[rt] = mem.read32(addr);
         adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xFE00 == 0x1A00 {
-        // SUB (register) T1 likewise sets flags (`subs`).
-        let (rd, rs, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize, ((o >> 6) & 7) as usize);
-        let r = sub_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 1);
-        cpu.regs.r[rd] = r;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xFE00 == 0x1C00 {
-        let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
-        let im = (o >> 6) & 7;
-        let r = add_flags(cpu, rr(cpu, rn, pc), im, 0);
-        cpu.regs.r[rd] = r;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xFE00 == 0x1E00 {
-        let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
-        let im = (o >> 6) & 7;
-        let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1);
-        cpu.regs.r[rd] = r;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    // MOVS/CMP/ADDS/SUBS imm8
-    if o & 0xF800 == 0x2000 {
-        let rd = ((o >> 8) & 7) as usize;
-        cpu.regs.r[rd] = o & 0xFF;
-        // Predicated (in-IT) T1 MOVS preserves flags (matches silicon and
-        // GCC's expectation: D_PageTicker's `itt lt; movlt; strlt` needs N
-        // live for strlt; clobbering it hangs the title forever). Bare movs
-        // sets N/Z via nz(); C and V are UNCHANGED (differential fuzz
-        // caught a stray V-clear here).
-        // it_suppress covers the last-slot case too (it_n is already
-        // cleared there when it_ok runs).
-        nz(cpu, o & 0xFF);
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x2800 {
-        let rn = ((o >> 8) & 7) as usize;
-        cpu.it_suppress = false; // T1 CMP always updates flags, even in IT.
-        sub_flags(cpu, rr(cpu, rn, pc), o & 0xFF, 1);
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x3000 {
-        let rd = ((o >> 8) & 7) as usize;
-        let r = add_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 0);
-        cpu.regs.r[rd] = r;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x3800 {
-        let rd = ((o >> 8) & 7) as usize;
-        let r = sub_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 1);
-        cpu.regs.r[rd] = r;
-        adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
     // ALU ops
     if o & 0xFC00 == 0x4000 {
@@ -513,59 +597,271 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc
             }
         }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    // high-register ops + BX/BLX (op select is bits[9:8])
-    if o & 0xFC00 == 0x4400 {
-        let h = (o >> 8) & 3;
-        let rs = ((o >> 3) & 0xF) as usize;
-        let rd = ((o & 7) | ((o >> 4) & 8)) as usize;
-        match h {
-            0 => {
-                let r = rr(cpu, rd, pc).wrapping_add(rr(cpu, rs, pc));
-                if rd == 15 {
-                    return branch(cpu, sys, mem, r, pc, op, 0, 2);
-                }
-                cpu.regs.r[rd] = r;
-            }
-            1 => {
-                cpu.it_suppress = false; // T1 CMP always updates flags.
-                sub_flags(cpu, rr(cpu, rd, pc), rr(cpu, rs, pc), 1);
-            }
-            2 => {
-                let v = rr(cpu, rs, pc);
-                if rd == 15 {
-                    return branch(cpu, sys, mem, v, pc, op, 0, 2);
-                }
-                cpu.regs.r[rd] = v;
-            }
-            _ => {
-                let t = rr(cpu, rs, pc);
-                if o & 0x80 != 0 {
-                    // BLX reg: bits[2:0] are reserved 000 on Cortex-M3
-                    // (v8-M blxns space) — validate BEFORE writing LR, or
-                    // a faulting BLX corrupts LR (differential fuzz: LR
-                    // written, oracle faults cleanly). Target must stay
-                    // Thumb (branch faults even targets like HW).
-                    if o & 7 != 0 {
-                        return fault(cpu, pc, op, 0, 2);
-                    }
-                    // BLX reg: LR = next addr; target must stay Thumb
-                    cpu.regs.r[14] = (pc + 2) | 1;
-                }
-                return branch(cpu, sys, mem, t, pc, op, 0, 2);
-            }
+    if o & 0xFE00 == 0x1A00 {
+        // Fused (SUBreg, CMP-reg): compute-then-compare idiom (delay loops).
+        if cpu.it_n == 0 && (q & 0xFC00) == 0x4000 && ((q >> 6) & 0xF) == 10 && fusion_live() {
+            return fused_sub_cmp(cpu, sys, mem, o, q, pc);
+        }
+        // SUB (register) T1 likewise sets flags (`subs`).
+        let (rd, rs, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize, ((o >> 6) & 7) as usize);
+        let r = sub_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 1);
+        cpu.regs.r[rd] = r;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // LSL/LSR/ASR imm, ADD/SUB reg+imm3 (all flag-setting)
+    if o & 0xF800 == 0x0000 {
+        // Fused (LSL-imm, Bcc): shifted-compare loop tests.
+        if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
+            return fused_lsl_bcc(cpu, sys, mem, o, q, pc);
+        }
+        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
+        let im = (o >> 6) & 0x1F;
+        let v = rr(cpu, rs, pc);
+        let (r, co) = shift_op(v, 0, im, carry(cpu));
+        cpu.regs.r[rd] = r;
+        nz(cpu, r);
+        if !cpu.it_suppress {
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
         }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    // LDR literal
-    if o & 0xF800 == 0x4800 {
-        let rt = ((o >> 8) & 7) as usize;
-        let base = (pc + 4) & !3;
-        cpu.regs.r[rt] = mem.read32(base.wrapping_add((o & 0xFF) * 4));
+    if o & 0xF800 == 0xE000 {
+        let imm = sx(((o & 0x7FF) << 1) as u32, 12);
+        return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(imm)) | 1, pc, op, 0, 2);
+    }
+    // CBZ / CBNZ (base pc+4; offset is imm5*2 + op[9]*64, GAS-verified)
+    if o & 0xF500 == 0xB100 {
+        let nz = ((o >> 3) & 0x1F) * 2 + ((o >> 9) & 1) * 64;
+        let rn = (o & 7) as usize;
+        let take = if o & 0x800 == 0 {
+            rr(cpu, rn, pc) == 0
+        } else {
+            rr(cpu, rn, pc) != 0
+        };
+        if take {
+            return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(nz)) | 1, pc, op, 0, 2);
+        }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
+    }
+    if o & 0xF800 == 0x2800 {
+        // Fused (CMP-imm, Bcc): the loop-test idiom.
+        if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
+            return fused_cmp_bcc(cpu, sys, mem, o, q, pc);
+        }
+        let rn = ((o >> 8) & 7) as usize;
+        cpu.it_suppress = false; // T1 CMP always updates flags, even in IT.
+        sub_flags(cpu, rr(cpu, rn, pc), o & 0xFF, 1);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // PUSH / POP
+    if o & 0xFE00 == 0xB400 {
+        let list = o & 0xFF;
+        let nl = list.count_ones() + if o & 0x100 != 0 { 1 } else { 0 };
+        let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
+        cpu.regs.r[13] = sp;
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                mem.write32(sp, cpu.regs.r[i as usize]);
+                sp += 4;
+            }
+        }
+        if o & 0x100 != 0 {
+            mem.write32(sp, cpu.regs.r[14]);
+        }
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xFE00 == 0xBC00 {
+        let list = o & 0xFF;
+        let topc = o & 0x100 != 0;
+        let mut sp = cpu.regs.r[13];
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                cpu.regs.r[i as usize] = mem.read32(sp);
+                sp += 4;
+            }
+        }
+        cpu.regs.r[13] = sp.wrapping_add(if topc { 4 } else { 0 });
+        if topc {
+            let t = mem.read32(sp);
+            return branch(cpu, sys, mem, t, pc, op, 0, 2);
+        }
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // ADD/SUB SP imm (1011_0000_0/1_xxxxxxx)
+    if o & 0xFF00 == 0xB000 {
+        let im = (o & 0x7F) * 4;
+        if o & 0x80 == 0 {
+            cpu.regs.r[13] = cpu.regs.r[13].wrapping_add(im);
+        } else {
+            cpu.regs.r[13] = cpu.regs.r[13].wrapping_sub(im);
+        }
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x3000 {
+        let rd = ((o >> 8) & 7) as usize;
+        let r = add_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 0);
+        cpu.regs.r[rd] = r;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x6000 {
+        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
+        mem.write32(addr, rr(cpu, rt, pc));
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x7800 {
+        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let addr = rr(cpu, rn, pc).wrapping_add((o >> 6) & 0x1F);
+        cpu.regs.r[rt] = mem.read8(addr) as u32;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // SXTH/SXTB/UXTH/UXTB (B200-B2FF)
+    if o & 0xFF00 == 0xB200 {
+        let (rs, rd) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let v = rr(cpu, rs, pc);
+        cpu.regs.r[rd] = match (o >> 6) & 3 {
+            0 => sx(v & 0xFFFF, 16),
+            1 => sx(v & 0xFF, 8),
+            2 => v & 0xFFFF,
+            _ => v & 0xFF,
+        };
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // MOVS/CMP/ADDS/SUBS imm8
+    if o & 0xF800 == 0x2000 {
+        let rd = ((o >> 8) & 7) as usize;
+        cpu.regs.r[rd] = o & 0xFF;
+        // Predicated (in-IT) T1 MOVS preserves flags (matches silicon and
+        // GCC's expectation: D_PageTicker's `itt lt; movlt; strlt` needs N
+        // live for strlt; clobbering it hangs the title forever). Bare movs
+        // sets N/Z via nz(); C and V are UNCHANGED (differential fuzz
+        // caught a stray V-clear here).
+        // it_suppress covers the last-slot case too (it_n is already
+        // cleared there when it_ok runs).
+        nz(cpu, o & 0xFF);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xFE00 == 0x1E00 {
+        let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
+        let im = (o >> 6) & 7;
+        let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1);
+        cpu.regs.r[rd] = r;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0xA000 {
+        let rd = ((o >> 8) & 7) as usize;
+        cpu.regs.r[rd] = ((pc + 4) & !3).wrapping_add((o & 0xFF) * 4);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x3800 {
+        let rd = ((o >> 8) & 7) as usize;
+        let r = sub_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 1);
+        cpu.regs.r[rd] = r;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x9800 {
+        let rt = ((o >> 8) & 7) as usize;
+        cpu.regs.r[rt] = mem.read32(cpu.regs.r[13].wrapping_add((o & 0xFF) * 4));
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0xA800 {
+        let rd = ((o >> 8) & 7) as usize;
+        cpu.regs.r[rd] = cpu.regs.r[13].wrapping_add((o & 0xFF) * 4);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // hints + IT
+    if o & 0xFF00 == 0xBF00 {
+        if op == 0xBF00 {
+            adv(cpu, pc, 2);
+            return 1;
+        }
+        // WFI/WFE: with delivery on, halt until an interrupt is pending
+        // (JS advances virtual time and wakes us). The instruction is
+        // complete at halt, so on wake we resume AFTER it. Without
+        // delivery this is a plain nop (polling path).
+        if op == 0xBF30 || op == 0xBF20 {
+            adv(cpu, pc, 2);
+            if cpu.deliver_irqs {
+                // A pending interrupt with PRIMASK clear means no sleep
+                // (the exception is taken on the next run-loop iteration).
+                if !(sys.p.nvic.borrow().has_pending() && cpu.regs.primask == 0) {
+                    cpu.sleeping = true;
+                    crate::system::CPU_SLEEPING.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            return 1;
+        }
+        // YIELD/WFE/WFI/SEV/SEVL(/other reserved hints): no-op for the
+        // polling firmware the wasm core runs today.
+        if o & 0x0F == 0 && (o & 0xF0) <= 0x50 {
+            adv(cpu, pc, 2);
+            return 1;
+        }
+        if o & 0x0F == 0 {
+            return fault(cpu, pc, op, 0, 2);
+        }
+        cpu.it_cond = ((o >> 4) & 0xF) as u8;
+        cpu.it_mask = (o & 0xF) as u8;
+        cpu.it_n = 4 - cpu.it_mask.trailing_zeros() as u8;
+        cpu.it_idx = 0;
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    // SP-relative + ADR
+    if o & 0xF800 == 0x9000 {
+        let rt = ((o >> 8) & 7) as usize;
+        mem.write32(cpu.regs.r[13].wrapping_add((o & 0xFF) * 4), rr(cpu, rt, pc));
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x8000 {
+        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 2);
+        mem.write16(addr, (rr(cpu, rt, pc) & 0xFFFF) as u16);
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x0800 {
+        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
+        let mut im = (o >> 6) & 0x1F;
+        if im == 0 {
+            im = 32;
+        }
+        let v = rr(cpu, rs, pc);
+        let (r, co) = shift_op(v, 1, im, carry(cpu));
+        cpu.regs.r[rd] = r;
+        nz(cpu, r);
+        if !cpu.it_suppress {
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        }
+        adv(cpu, pc, 2);
+        return 1;
+    }
+    if o & 0xF800 == 0x8800 {
+        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
+        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 2);
+        cpu.regs.r[rt] = mem.read16(addr) as u32;
+        adv(cpu, pc, 2);
+        return 1;
     }
     // STR/LDR register-offset (class is op[11:9]; Ro=op[8:6], Rn=op[5:3], Rt=op[2:0])
     if o & 0xF000 == 0x5000 {
@@ -588,143 +884,73 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc
             }
         }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    if o & 0xF800 == 0x6000 {
-        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
-        mem.write32(addr, rr(cpu, rt, pc));
+    if o & 0xFE00 == 0x1800 {
+        // ADD (register) T1 sets flags (GAS assembles `adds` here; objdump
+        // prints predicated uses as `add*`). Do NOT "fix" this to preserve
+        // flags — that regressed strcasecmp/title (Z lost, early return).
+        let (rd, rs, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize, ((o >> 6) & 7) as usize);
+        let r = add_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 0);
+        cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x6800 {
-        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
-        cpu.regs.r[rt] = mem.read32(addr);
-        adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
     if o & 0xF800 == 0x7000 {
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add((o >> 6) & 0x1F);
         mem.write8(addr, (rr(cpu, rt, pc) & 0xFF) as u8);
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    if o & 0xF800 == 0x7800 {
-        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let addr = rr(cpu, rn, pc).wrapping_add((o >> 6) & 0x1F);
-        cpu.regs.r[rt] = mem.read8(addr) as u32;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x8000 {
-        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 2);
-        mem.write16(addr, (rr(cpu, rt, pc) & 0xFFFF) as u16);
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x8800 {
-        let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 2);
-        cpu.regs.r[rt] = mem.read16(addr) as u32;
-        adv(cpu, pc, 2);
-        return true;
-    }
-    // SP-relative + ADR
-    if o & 0xF800 == 0x9000 {
-        let rt = ((o >> 8) & 7) as usize;
-        mem.write32(cpu.regs.r[13].wrapping_add((o & 0xFF) * 4), rr(cpu, rt, pc));
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0x9800 {
-        let rt = ((o >> 8) & 7) as usize;
-        cpu.regs.r[rt] = mem.read32(cpu.regs.r[13].wrapping_add((o & 0xFF) * 4));
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0xA000 {
-        let rd = ((o >> 8) & 7) as usize;
-        cpu.regs.r[rd] = ((pc + 4) & !3).wrapping_add((o & 0xFF) * 4);
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0xA800 {
-        let rd = ((o >> 8) & 7) as usize;
-        cpu.regs.r[rd] = cpu.regs.r[13].wrapping_add((o & 0xFF) * 4);
-        adv(cpu, pc, 2);
-        return true;
-    }
-    // ADD/SUB SP imm (1011_0000_0/1_xxxxxxx)
-    if o & 0xFF00 == 0xB000 {
-        let im = (o & 0x7F) * 4;
-        if o & 0x80 == 0 {
-            cpu.regs.r[13] = cpu.regs.r[13].wrapping_add(im);
-        } else {
-            cpu.regs.r[13] = cpu.regs.r[13].wrapping_sub(im);
+    if o & 0xF800 == 0x1000 {
+        let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
+        let mut im = (o >> 6) & 0x1F;
+        if im == 0 {
+            im = 32;
+        }
+        let v = rr(cpu, rs, pc);
+        let (r, co) = shift_op(v, 2, im, carry(cpu));
+        cpu.regs.r[rd] = r;
+        nz(cpu, r);
+        if !cpu.it_suppress {
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
         }
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
-    // SXTH/SXTB/UXTH/UXTB (B200-B2FF)
-    if o & 0xFF00 == 0xB200 {
-        let (rs, rd) = (((o >> 3) & 7) as usize, (o & 7) as usize);
-        let v = rr(cpu, rs, pc);
-        cpu.regs.r[rd] = match (o >> 6) & 3 {
-            0 => sx(v & 0xFFFF, 16),
-            1 => sx(v & 0xFF, 8),
-            2 => v & 0xFFFF,
-            _ => v & 0xFF,
-        };
+    if o & 0xFE00 == 0x1C00 {
+        let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
+        let im = (o >> 6) & 7;
+        let r = add_flags(cpu, rr(cpu, rn, pc), im, 0);
+        cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
-        return true;
+        return 1;
+    }
+    if o & 0xF800 == 0xC800 {
+        let rn = ((o >> 8) & 7) as usize;
+        let list = o & 0xFF;
+        let mut a = cpu.regs.r[rn];
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                cpu.regs.r[i as usize] = mem.read32(a);
+                a += 4;
+            }
+        }
+        if (list >> rn) & 1 == 0 {
+            cpu.regs.r[rn] = a;
+        }
+        adv(cpu, pc, 2);
+        return 1;
     }
     // CPS (primask). SETEND faults (never emitted by firmware).
     if o & 0xFF00 == 0xB600 {
         if o & 0x20 != 0 {
             cpu.regs.primask = (o >> 4) & 1;
             adv(cpu, pc, 2);
-            return true;
+            return 1;
         }
         return fault(cpu, pc, op, 0, 2);
-    }
-    // PUSH / POP
-    if o & 0xFE00 == 0xB400 {
-        let list = o & 0xFF;
-        let nl = list.count_ones() + if o & 0x100 != 0 { 1 } else { 0 };
-        let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
-        cpu.regs.r[13] = sp;
-        for i in 0..8 {
-            if (list >> i) & 1 == 1 {
-                mem.write32(sp, cpu.regs.r[i as usize]);
-                sp += 4;
-            }
-        }
-        if o & 0x100 != 0 {
-            mem.write32(sp, cpu.regs.r[14]);
-        }
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xFE00 == 0xBC00 {
-        let list = o & 0xFF;
-        let topc = o & 0x100 != 0;
-        let mut sp = cpu.regs.r[13];
-        for i in 0..8 {
-            if (list >> i) & 1 == 1 {
-                cpu.regs.r[i as usize] = mem.read32(sp);
-                sp += 4;
-            }
-        }
-        cpu.regs.r[13] = sp.wrapping_add(if topc { 4 } else { 0 });
-        if topc {
-            let t = mem.read32(sp);
-            return branch(cpu, sys, mem, t, pc, op, 0, 2);
-        }
-        adv(cpu, pc, 2);
-        return true;
     }
     // REV / REV16 / REVSH (BA00-BAFF, op is bits[7:6])
     if o & 0xFF00 == 0xBA00 {
@@ -742,82 +968,12 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc
             _ => return fault(cpu, pc, op, 0, 2),
         };
         adv(cpu, pc, 2);
-        return true;
+        return 1;
     }
     // BKPT: stays a loud fault (debug breakpoints; no firmware here uses them
     // for control flow — FreeRTOS configASSERT loops, it doesn't trap).
     if o & 0xFF00 == 0xBE00 {
         return fault(cpu, pc, op, 0, 2);
-    }
-    // SVC: synchronous exception. With delivery on, take it inline (exact
-    // stacking, handler runs on MSP); otherwise loud fault (polling
-    // firmware never SVCs, so hitting one is a bug worth surfacing).
-    // The active-priority push balances exception_return's pop, including
-    // an SVC taken inside a handler (nested).
-    if o & 0xFF00 == 0xDF00 {
-        if !cpu.deliver_irqs {
-            return fault(cpu, pc, op, 0, 2);
-        }
-        adv(cpu, pc, 2);
-        sys.p.nvic.borrow_mut().push_active(-5);
-        cpu.take_exception(sys, mem, -5);
-        return true;
-    }
-    if o & 0xFF00 == 0xDE00 {
-        return fault(cpu, pc, op, 0, 2);
-    }
-    // CBZ / CBNZ (base pc+4; offset is imm5*2 + op[9]*64, GAS-verified)
-    if o & 0xF500 == 0xB100 {
-        let nz = ((o >> 3) & 0x1F) * 2 + ((o >> 9) & 1) * 64;
-        let rn = (o & 7) as usize;
-        let take = if o & 0x800 == 0 {
-            rr(cpu, rn, pc) == 0
-        } else {
-            rr(cpu, rn, pc) != 0
-        };
-        if take {
-            return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(nz)) | 1, pc, op, 0, 2);
-        }
-        adv(cpu, pc, 2);
-        return true;
-    }
-    // hints + IT
-    if o & 0xFF00 == 0xBF00 {
-        if op == 0xBF00 {
-            adv(cpu, pc, 2);
-            return true;
-        }
-        // WFI/WFE: with delivery on, halt until an interrupt is pending
-        // (JS advances virtual time and wakes us). The instruction is
-        // complete at halt, so on wake we resume AFTER it. Without
-        // delivery this is a plain nop (polling path).
-        if op == 0xBF30 || op == 0xBF20 {
-            adv(cpu, pc, 2);
-            if cpu.deliver_irqs {
-                // A pending interrupt with PRIMASK clear means no sleep
-                // (the exception is taken on the next run-loop iteration).
-                if !(sys.p.nvic.borrow().has_pending() && cpu.regs.primask == 0) {
-                    cpu.sleeping = true;
-                    crate::system::CPU_SLEEPING.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            return true;
-        }
-        // YIELD/WFE/WFI/SEV/SEVL(/other reserved hints): no-op for the
-        // polling firmware the wasm core runs today.
-        if o & 0x0F == 0 && (o & 0xF0) <= 0x50 {
-            adv(cpu, pc, 2);
-            return true;
-        }
-        if o & 0x0F == 0 {
-            return fault(cpu, pc, op, 0, 2);
-        }
-        cpu.it_cond = ((o >> 4) & 0xF) as u8;
-        cpu.it_mask = (o & 0xF) as u8;
-        cpu.it_n = 4 - cpu.it_mask.trailing_zeros() as u8;
-        cpu.it_idx = 0;
-        adv(cpu, pc, 2);
-        return true;
     }
     // STMIA / LDMIA
     if o & 0xF800 == 0xC000 {
@@ -833,37 +989,7 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc
         // T1 STM always writes back (Rn==PC excluded by construction)
         cpu.regs.r[rn] = a;
         adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0xC800 {
-        let rn = ((o >> 8) & 7) as usize;
-        let list = o & 0xFF;
-        let mut a = cpu.regs.r[rn];
-        for i in 0..8 {
-            if (list >> i) & 1 == 1 {
-                cpu.regs.r[i as usize] = mem.read32(a);
-                a += 4;
-            }
-        }
-        if (list >> rn) & 1 == 0 {
-            cpu.regs.r[rn] = a;
-        }
-        adv(cpu, pc, 2);
-        return true;
-    }
-    // B.cond / B (base is pc+4: Thumb PC reads as addr+4)
-    if o & 0xF000 == 0xD000 {
-        let cc = (o >> 8) & 0xF;
-        let imm = sx(((o & 0xFF) << 1) as u32, 9);
-        if cond_ok(cpu, cc) {
-            return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(imm)) | 1, pc, op, 0, 2);
-        }
-        adv(cpu, pc, 2);
-        return true;
-    }
-    if o & 0xF800 == 0xE000 {
-        let imm = sx(((o & 0x7FF) << 1) as u32, 12);
-        return branch(cpu, sys, mem, (pc.wrapping_add(4).wrapping_add(imm)) | 1, pc, op, 0, 2);
+        return 1;
     }
     fault(cpu, pc, op, 0, 2)
 }
@@ -991,7 +1117,7 @@ pub fn exec32(
     op1: u16,
     op2: u16,
     pc: u32,
-) -> bool {
+) -> u32 {
     let o1 = op1 as u32;
     let o2 = op2 as u32;
     // 32-bit instructions respect their explicit S bit (helpers stay
@@ -999,7 +1125,7 @@ pub fn exec32(
     cpu.it_suppress = false;
     if !it_ok(cpu) {
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // USAT / SSAT (saturate). Shares hw1 with MSR (0xF380|Rn) but o2[15]
         // is always 0 here (imm5 lives in o2[14:10]); MSR needs o2>=0x8800,
@@ -1039,7 +1165,7 @@ pub fn exec32(
                 }
                 cpu.regs.r[rd] = r;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             let sat = (o2 & 0x1F) as u32;
             // Reserved o2[5] (capstone-INVALID, e.g. F380:0020): fault.
@@ -1064,7 +1190,7 @@ pub fn exec32(
             }
             cpu.regs.r[((o2 >> 8) & 0xF) as usize] = r;
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if (o1 & 0xFFF0 == 0xF300 || o1 & 0xFFF0 == 0xF320) && o2 < 0x8000 {
             // SSAT Rd, #sat, Rn [, LSL/ASL #sh] (sh-type is o1[5]).
@@ -1101,7 +1227,7 @@ pub fn exec32(
                 }
                 cpu.regs.r[rd] = r;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             let sat = ((o2 & 0x1F) + 1) as u32;
             // Reserved o2[5] and ASR #0 are UNPREDICTABLE (capstone-INVALID).
@@ -1130,7 +1256,7 @@ pub fn exec32(
             }
             cpu.regs.r[((o2 >> 8) & 0xF) as usize] = r;
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
     // ---- F3: misc (hints, barriers, MRS/MSR, bitfield) ----
     // NOTE: F3xx overlaps Bcc.W's op1 range (F000-F3FF), so this must only
@@ -1141,11 +1267,11 @@ pub fn exec32(
     if o1 & 0xFF00 == 0xF300 {
         if o1 == 0xF3AF && o2 == 0x8000 {
             adv(cpu, pc, 4); // NOP.W
-            return true;
+            return 1;
         }
         if o1 == 0xF3AF && o2 == 0x80F0 {
             adv(cpu, pc, 4); // DBG: hint, no-op on silicon
-            return true;
+            return 1;
         }
         if o1 == 0xF3BF && (o2 & 0xFF00) == 0x8F00 {
             // DMB/DSB/ISB/CLREX. CLREX (o2==0x8F5F) drops the LDREX
@@ -1154,7 +1280,7 @@ pub fn exec32(
                 cpu.exclusive = None;
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if o1 & 0xFFF0 == 0xF3E0 && o2 & 0xF000 == 0x8000 {
             // MRS Rd, SYSm
@@ -1173,7 +1299,7 @@ pub fn exec32(
                 _ => return fault(cpu, pc, op1, op2, 4),
             };
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if o1 & 0xFFF0 == 0xF380 && o2 & 0xF000 == 0x8000 {
             // MSR SYSm, Rn. SYSm lives in o2[7:0] (0-3 xPSR, 8-9 MSP/PSP,
@@ -1212,7 +1338,7 @@ pub fn exec32(
                 _ => return fault(cpu, pc, op1, op2, 4),
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if o2 < 0x8000 {
             // Bitfield with op2[15]=0 (Bcc.W/BL always have op2[15]=1).
@@ -1231,7 +1357,7 @@ pub fn exec32(
                 let v = if w >= 32 { v } else { v & ((1u32 << w) - 1) };
                 cpu.regs.r[rd] = if o1 & 0xFFF0 == 0xF340 { sx(v, w) } else { v };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             if o1 & 0xFFF0 == 0xF360 {
                 // BFI / BFC (Rn==15)
@@ -1255,7 +1381,7 @@ pub fn exec32(
                         (cpu.regs.r[rd] & !mask) | ((rr(cpu, rn, pc) << lsb) & mask);
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             return fault(cpu, pc, op1, op2, 4);
         }
@@ -1303,7 +1429,7 @@ pub fn exec32(
                 return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // BL (Fxxx) / BLX-imm (Exxx, ARM state: impossible on Cortex-M)
         if o2 & 0xC000 == 0xC000 {
@@ -1334,7 +1460,7 @@ pub fn exec32(
             let imm = (i << 11) | ((o1 & 0xF) << 12) | (((o2 >> 12) & 7) << 8) | (o2 & 0xFF);
             cpu.regs.r[rd] = imm;
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if o1 & 0xFBF0 == 0xF2C0 {
             let rd = ((o2 >> 8) & 0xF) as usize;
@@ -1345,7 +1471,7 @@ pub fn exec32(
             let imm = (i << 11) | ((o1 & 0xF) << 12) | (((o2 >> 12) & 7) << 8) | (o2 & 0xFF);
             cpu.regs.r[rd] = (cpu.regs.r[rd] & 0xFFFF) | (imm << 16);
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // ADDW / SUBW (F2 group): plain 12-bit immediate, NO ThumbExpand,
         // no flags. GAS-verified: addw=F20x, subw=F2Ax (i-bit in o1[10]
@@ -1368,7 +1494,7 @@ pub fn exec32(
                 rr(cpu, rn, pc).wrapping_add(imm)
             };
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // F6/F7 + data op2: SSAT/USAT/coprocessor zone (no samples) -> fault
         if o1 >= 0xF600 {
@@ -1415,7 +1541,7 @@ pub fn exec32(
                     nzc(cpu, imm, co);
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             if op == 3 && rn == 15 {
                 if rd == 15 {
@@ -1426,7 +1552,7 @@ pub fn exec32(
                     nzc(cpu, !imm, co);
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             let test = s && rd == 15;
             match alu_op(cpu, op, s, a, imm, ci, co, test) {
@@ -1436,12 +1562,12 @@ pub fn exec32(
                     }
                     cpu.regs.r[rd] = r;
                     adv(cpu, pc, 4);
-                    true
+                    1
                 }
                 None => {
                     if test {
                         adv(cpu, pc, 4);
-                        true
+                        1
                     } else {
                         fault(cpu, pc, op1, op2, 4)
                     }
@@ -1498,7 +1624,7 @@ pub fn exec32(
                 // is a genuine interworking branch (NOT a hint).
                 if rt == 15 && size != 4 {
                     adv(cpu, pc, 4); // PLD/PLI
-                    return true;
+                    return 1;
                 }
                 let base = (pc + 4) & !3;
                 let v = mem.read32(base.wrapping_add(imm12));
@@ -1514,7 +1640,7 @@ pub fn exec32(
                     return branch(cpu, sys, mem, v, pc, op1, op2, 4);
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             if rt == 15 {
                 if !is_load {
@@ -1524,7 +1650,7 @@ pub fn exec32(
                 // privileged alike). Unsigned byte/half into PC are PLD.
                 if !signed && size != 4 {
                     adv(cpu, pc, 4); // PLD
-                    return true;
+                    return 1;
                 }
                 // else: fall through to the load path (writes r15, then
                 // interworks at the rt==15 check below).
@@ -1555,7 +1681,7 @@ pub fn exec32(
                 }
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // T3 literal pool (Rn==PC, c<8): ALWAYS the negative form —
         // positive literals encode as c>=8 (F89F/F8BF/F8DF), so U is
@@ -1571,11 +1697,11 @@ pub fn exec32(
             if rt == 15 {
                 if !signed && size != 4 {
                     adv(cpu, pc, 4); // PLD: pure hint
-                    return true;
+                    return 1;
                 }
                 if signed {
                     adv(cpu, pc, 4); // PLI: no literal-into-PC signed load
-                    return true;
+                    return 1;
                 }
                 let v = mem.read32(addr);
                 cpu.regs.r[15] = v;
@@ -1588,7 +1714,7 @@ pub fn exec32(
             };
             cpu.regs.r[rt] = if signed { sx(v, size * 8) } else { v };
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // T3: c<8. Register-offset iff op2[11:10]==00 AND Rn!=PC: with
         // Rn==PC every form is literal (capstone-verified: even [11:10]==00
@@ -1613,11 +1739,11 @@ pub fn exec32(
                 // Capstone prints as `pli`, without loading).
                 if rt == 15 && !signed && size != 4 {
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 }
                 if rt == 15 && signed {
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 }
                 if rt == 15 {
                     if size != 4 || signed {
@@ -1651,7 +1777,7 @@ pub fn exec32(
                 }
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // imm8 P/U/W form
         let p = (o2 >> 10) & 1;
@@ -1670,7 +1796,7 @@ pub fn exec32(
             // path below); other signed-RtPC has no encoding (faults below).
             if rt == 15 && !signed && size != 4 {
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             // F9 LDRSB/LDRSH (incl. T-forms LDRSBT/LDRSHT) with Rt==PC
             // and Rn!=PC are genuine interworking loads, NOT PLI
@@ -1723,7 +1849,7 @@ pub fn exec32(
             cpu.regs.r[rn] = base.wrapping_add(off);
         }
         adv(cpu, pc, 4);
-        return true;
+        return 1;
         // ---- FA: shifted-reg, extend, CLZ/RBIT/REV ----
     } else if o1 & 0xFF00 == 0xFA00 {
         let op = (o1 >> 4) & 0xF;
@@ -1743,7 +1869,7 @@ pub fn exec32(
                         let (r, _) = shift_op(rr(cpu, rn, pc), 0, amt, carry(cpu));
                         cpu.regs.r[rd] = r;
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     8 => {
                         if o2 & 0xC0 != 0x80 {
@@ -1757,7 +1883,7 @@ pub fn exec32(
                             rr(cpu, rn, pc).wrapping_add(v)
                         };
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     _ => return fault(cpu, pc, op1, op2, 4),
                 }
@@ -1786,7 +1912,7 @@ pub fn exec32(
                     cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             1 => {
                 // LSLS (op2[7:4]==0, S) or UXT AH / UXTH (op2 = F:Rd:10:rot:Rm).
@@ -1802,7 +1928,7 @@ pub fn exec32(
                         nz(cpu, r);
                         cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     8 => {
                         if o2 & 0xC0 != 0x80 {
@@ -1816,7 +1942,7 @@ pub fn exec32(
                             rr(cpu, rn, pc).wrapping_add(v)
                         };
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     _ => return fault(cpu, pc, op1, op2, 4),
                 }
@@ -1837,7 +1963,7 @@ pub fn exec32(
                         };
                         cpu.regs.r[rd] = r;
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     8 => {
                         if o2 & 0xC0 != 0x80 {
@@ -1851,7 +1977,7 @@ pub fn exec32(
                             rr(cpu, rn, pc).wrapping_add(v)
                         };
                         adv(cpu, pc, 4);
-                        return true;
+                        return 1;
                     }
                     _ => return fault(cpu, pc, op1, op2, 4),
                 }
@@ -1871,7 +1997,7 @@ pub fn exec32(
                     nz(cpu, r);
                     cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 }
                 // UXTAB / UXTB (op2 = F:Rd:10:rot:Rm)
                 if o2 & 0xF0C0 != 0xF080 {
@@ -1885,7 +2011,7 @@ pub fn exec32(
                     rr(cpu, rn, pc).wrapping_add(v)
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             9 => {
                 // REV.W / REV16.W / REVSH.W / RBIT (op2[7:4] selects)
@@ -1906,7 +2032,7 @@ pub fn exec32(
                     _ => return fault(cpu, pc, op1, op2, 4),
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             11 => {
                 // CLZ / RBIT
@@ -1920,7 +2046,7 @@ pub fn exec32(
                     _ => return fault(cpu, pc, op1, op2, 4),
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             _ => return fault(cpu, pc, op1, op2, 4),
         }
@@ -1949,7 +2075,7 @@ pub fn exec32(
                         );
                     }
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 } else if sub == 1 {
                     if ra == 15 {
                         return fault(cpu, pc, op1, op2, 4);
@@ -1958,7 +2084,7 @@ pub fn exec32(
                         rr(cpu, rn, pc).wrapping_mul(rr(cpu, rm, pc)),
                     );
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 }
                 return fault(cpu, pc, op1, op2, 4);
             }
@@ -1988,7 +2114,7 @@ pub fn exec32(
                     (rr(cpu, ra, pc) as i32).wrapping_add(p) as u32
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             2 => {
                 // SMLAD (Ra!=15) / SMUAD (Ra==15), dual 16x16 + accumulate.
@@ -2013,7 +2139,7 @@ pub fn exec32(
                     (rr(cpu, ra, pc) as i32).wrapping_add(p) as u32
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             3 => {
                 // SMULW (Ra==15) / SMLAW: 32x16 -> top 32 bits.
@@ -2036,7 +2162,7 @@ pub fn exec32(
                     rr(cpu, ra, pc).wrapping_add(p)
                 };
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             8 => {
                 // SMULL. Word form needs o2[7:4]==0 (differential fuzz:
@@ -2055,7 +2181,7 @@ pub fn exec32(
                 cpu.regs.r[((o2 >> 12) & 0xF) as usize] = p as u32;
                 cpu.regs.r[((o2 >> 8) & 0xF) as usize] = (p >> 32) as u32;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             9 => {
                 // SDIV (1111_Rd_1111_Rm op2 shape) shares op 9 with SMLAL,
@@ -2076,10 +2202,10 @@ pub fn exec32(
                     // oracle keeps the quotient without interworking or
                     // adv-clobber); anything else advances past.
                     if rd == 15 {
-                        return true;
+                        return 1;
                     }
                     adv(cpu, pc, 4);
-                    return true;
+                    return 1;
                 }
                 return fault(cpu, pc, op1, op2, 4);
             }
@@ -2096,7 +2222,7 @@ pub fn exec32(
                 cpu.regs.r[((o2 >> 12) & 0xF) as usize] = p as u32;
                 cpu.regs.r[((o2 >> 8) & 0xF) as usize] = (p >> 32) as u32;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             11 => {
                 // UDIV (1111_Rd_1111_Rm). Plain (non-F:F) op-0xB has no
@@ -2109,10 +2235,10 @@ pub fn exec32(
                 cpu.regs.r[rd] = if b == 0 { 0 } else { rr(cpu, rn, pc) / b };
                 // Rd==PC: raw write stands (see SDIV).
                 if rd == 15 {
-                    return true;
+                    return 1;
                 }
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             13 => {
                 // SMLSLD/X (dual-halfword DSP) is all that lives here:
@@ -2139,7 +2265,7 @@ pub fn exec32(
                 cpu.regs.r[lo] = p as u32;
                 cpu.regs.r[hi] = (p >> 32) as u32;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             14 => {
                 // UMLAL word form needs o2[7:4]==0 (see SMULL).
@@ -2161,7 +2287,7 @@ pub fn exec32(
                 cpu.regs.r[lo] = p as u32;
                 cpu.regs.r[hi] = (p >> 32) as u32;
                 adv(cpu, pc, 4);
-                return true;
+                return 1;
             }
             _ => return fault(cpu, pc, op1, op2, 4),
         }
@@ -2216,7 +2342,7 @@ pub fn exec32(
                 }
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if op == 3 && rn == 15 {
             if rd == 15 {
@@ -2227,7 +2353,7 @@ pub fn exec32(
                 nzc(cpu, !sv, co);
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         let test = s && rd == 15;
         match alu_op(cpu, op, s, a, sv, ci, co, test) {
@@ -2237,12 +2363,12 @@ pub fn exec32(
                 }
                 cpu.regs.r[rd] = r;
                 adv(cpu, pc, 4);
-                true
+                1
             }
             None => {
                 if test {
                     adv(cpu, pc, 4);
-                    true
+                    1
                 } else {
                     fault(cpu, pc, op1, op2, 4)
                 }
@@ -2289,7 +2415,7 @@ pub fn exec32(
                 mem.read8(addr) as u32
             };
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // STREXB/H (E8C0|Rn; Rd=status in o2[11:8], Rt=data in o2[15:12]).
         // The oracle faults these unconditionally (byte-exclusive not
@@ -2311,7 +2437,7 @@ pub fn exec32(
             }
             cpu.exclusive = None; // STREX always clears, pass or fail
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // LDREX / STREX (E8 + nibble 4/5, word form). Single global
         // reservation: exact on a single core (see Cpu::exclusive).
@@ -2327,7 +2453,7 @@ pub fn exec32(
             }
             cpu.exclusive = None; // STREX always clears, pass or fail
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         if (o1 & 0x0FF0) == 0x0850 {
             if o2 & 0x0F00 != 0x0F00 {
@@ -2338,7 +2464,7 @@ pub fn exec32(
             cpu.exclusive = Some(addr & !3);
             cpu.regs.r[rt] = mem.read32(addr);
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // LDM / STM: P=o1[8] (pre/post), U=o1[7] (up/down), W=o1[5], L=o1[4].
         // IA=P0U1, IB=P1U1, DA=P0U0, DB=P1U0 (the old code keyed everything
@@ -2412,7 +2538,7 @@ pub fn exec32(
                 return branch(cpu, sys, mem, t, pc, op1, op2, 4);
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         // STRD / LDRD: same bits[11:9]==100 as LDM/STM but bit6==1
         // (complementary patterns 0x0800 vs 0x0840; GAS-verified).
@@ -2470,11 +2596,11 @@ pub fn exec32(
                 // it): differential fuzz shows the oracle keeping the
                 // written-back value (STRD-post-indexed with Rn==PC).
                 if rn == 15 {
-                    return true;
+                    return 1;
                 }
             }
             adv(cpu, pc, 4);
-            return true;
+            return 1;
         }
         return fault(cpu, pc, op1, op2, 4);
     } else {

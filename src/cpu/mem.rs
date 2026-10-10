@@ -419,9 +419,57 @@ impl Memory for FlatMemory {
 }
 
 impl FlatMemory {
-    /// Hot RAM/flash/extra body shared by read8/read8_raw. Kept tiny so the
-    /// JIT keeps inlining the gated callers; peripheral + MPU arms live in
-    /// cold out-of-line fns below.
+    /// Fused 32-bit fetch for wide instructions: one call + one region
+    /// resolve instead of two read16_raw calls. Returns None unless
+    /// pc..pc+3 sits in a single non-peripheral region — the caller then
+    /// falls back to two read16_raw fetches, preserving exact bad-record
+    /// and model behavior at region edges and peripheral windows (a fetch
+    /// there is diagnosed, not executed). No MPU/data gates: the exec gate
+    /// in run() already enforced read permission (same contract as
+    /// read16_raw). Outlined: run() is already huge; inlining this would
+    /// bloat the hot skeleton (see the MPU_ON lesson).
+    #[inline(never)]
+    pub(crate) fn fetch32_raw(&self, pc: u32) -> Option<u32> {
+        if is_periph(pc) {
+            return None;
+        }
+        if self.in_flash(pc) {
+            let o = (pc - self.flash_base) as usize;
+            if o + 3 < self.flash.len() {
+                return Some(
+                    (unsafe { *self.flash.get_unchecked(o) as u32 })
+                        | ((unsafe { *self.flash.get_unchecked(o + 1) as u32 }) << 8)
+                        | ((unsafe { *self.flash.get_unchecked(o + 2) as u32 }) << 16)
+                        | ((unsafe { *self.flash.get_unchecked(o + 3) as u32 }) << 24),
+                );
+            }
+            return None;
+        } else if self.in_ram(pc) {
+            let o = (pc - self.ram_base) as usize;
+            if o + 3 < self.ram.len() {
+                return Some(
+                    (unsafe { *self.ram.get_unchecked(o) as u32 })
+                        | ((unsafe { *self.ram.get_unchecked(o + 1) as u32 }) << 8)
+                        | ((unsafe { *self.ram.get_unchecked(o + 2) as u32 }) << 16)
+                        | ((unsafe { *self.ram.get_unchecked(o + 3) as u32 }) << 24),
+                );
+            }
+            return None;
+        } else if let Some(idx) = self.extra_idx(pc) {
+            let r = &self.extra[idx];
+            let o = (pc - r.base) as usize;
+            if o + 3 < r.data.len() {
+                return Some(
+                    (unsafe { *r.data.get_unchecked(o) as u32 })
+                        | ((unsafe { *r.data.get_unchecked(o + 1) as u32 }) << 8)
+                        | ((unsafe { *r.data.get_unchecked(o + 2) as u32 }) << 16)
+                        | ((unsafe { *r.data.get_unchecked(o + 3) as u32 }) << 24),
+                );
+            }
+            return None;
+        }
+        None
+    }
     #[inline(always)]
     fn read8_raw_unchecked(&self, addr: u32) -> u8 {
         // Containment is proven by in_flash/in_ram/extra_idx before each

@@ -435,20 +435,31 @@ impl Cpu {
                     break;
                 }
             }
-            // Raw fetch: the exec gate above already enforced read permission
-            // (exec_allow = data-read predicate + XN clear, so an allowed
-            // fetch's bytes are data-readable by construction) — per-byte
-            // data gates here would re-check a proven predicate twice per
-            // fetch for zero enforcement gain.
-            let op = mem.read16_raw(pc);
-            let l = thumb::len(op);
-            let ok = if l == 2 {
-                thumb::exec16(self, sys, mem, op, pc)
+            // Fused wide fetch: one region resolve serves both halfwords
+            // when pc..pc+3 is contained (the common case); otherwise fall
+            // back to two halfword fetches (region edges, peripheral
+            // windows — exact bad-record/model behavior there).
+            let (op, o2, l) = match mem.fetch32_raw(pc) {
+                Some(w) => {
+                    let op = w as u16;
+                    (op, (w >> 16) as u16, thumb::len(op))
+                }
+                None => {
+                    let op = mem.read16_raw(pc);
+                    let l = thumb::len(op);
+                    (op, if l == 4 { mem.read16_raw(pc + 2) } else { 0 }, l)
+                }
+            };
+            // o2 doubles as the fusion lookahead: the high halfword of a
+            // fused fetch, or 0 on the edge fallback (no template matches
+            // 0 — fusion safely disabled there). exec returns the guest
+            // instruction count (0 = stop/fault, 1, or 2 for a fused pair).
+            let n = if l == 2 {
+                thumb::exec16(self, sys, mem, op, pc, o2)
             } else {
-                let o2 = mem.read16_raw(pc + 2);
                 thumb::exec32(self, sys, mem, op, o2, pc)
             };
-            if !ok {
+            if n == 0 {
                 if self.fault.is_none() {
                     self.fault = Some(CpuFault { pc, op1: op, op2: 0, len: 2 });
                 }
@@ -469,8 +480,8 @@ impl Cpu {
                     self.regs.msp = self.regs.r[13];
                 }
             }
-            done += 1;
-            self.cycles += 1;
+            done += n;
+            self.cycles += n as u64;
             // Inline interrupt delivery (no JS pump needed): take the next
             // deliverable exception with PRIMASK clear — in thread mode AND
             // in handler mode, where a strictly-higher-priority IRQ preempts

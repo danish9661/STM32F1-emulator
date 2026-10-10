@@ -727,8 +727,35 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   bulk 60-90, fsmc 107); six fresh arduino-cli sketches 54-82 headless and
   **62-108 in real Chromium** (worst spixfer 62). Browser speed test green
   (76/102 MIPS, no console errors).
+- **Toolchain round (follow-up, same sprint)**: wasm-opt `-O3` via
+  `[package.metadata.wasm-pack.profile.release]` (+4-12%, flows through
+  the pinned toolchain so CI reproduces it byte-exact) and rustc
+  `opt-level = 3` (was `"s"`, +3-16%, dfu +16%). Binary 1.27MB → 1.42MB
+  pre-gzip. Post-toolchain: custom 62-82 headless / **72-115 in Chromium**,
+  shipped 59-114 headless, periph39 speed test **111-112 in Chromium**.
+  Full gates re-greened on the shipped binary; `pkg/`↔`site/` re-synced.
 - **Verified**: test_all 797/797, canary 39/39, coremark 5/5,
   emulator.js 3/3, cpu 50/50, `pkg/`↔`site/` mirrors synced.
+- **Fetch32 + dispatch reorder (follow-up, same sprint)**: run() fused the
+  two halfword fetches into one `fetch32_raw` region resolve (exact
+  fallback at edges/periph windows); exec16's 40-arm `if`-chain reordered
+  by measured frequency (HI/BLX, Bcc, LDRlit, LDR first; SVC/UDF pinned
+  before Bcc — the only order constraint, proven by exhaustive 65K-opcode
+  simulation with 0 diffs). Clean interleaved A/B (15 reps, quartiles):
+  oled +30%, compute +25%, showcase +31%, coremark +18%, dfu +13%,
+  spixfer +8% — every quartile above 1.0. (An earlier +8–29% reading was
+  confounded by leftover measurement counters in one binary; the clean
+  re-run with counter-free binaries on both sides is the trustworthy one.
+  Same-process interleaving + verified binary provenance are now the
+  documented bar — see the box-load note below.)
+- **Superoperators v1 (follow-up, same sprint)**: 4 fused 16-bit pairs
+  (LDRlit+LDR, SUBreg+CMP-reg, CMP-imm+Bcc, LSL-imm+Bcc) via an `o2n`
+  lookahead; shape-only guards inside the first arm (`it_n==0` fallback,
+  DF00/DE00 trap exclusion); exec returns guest counts (0/1/2). Proof:
+  5 native differential suites (~65K pair-cases, fused vs `fusion_off`,
+  full-state compare) + census 0-gap both widths + fuzz seeds 1+4
+  0 divergences. In-binary A/B (same wasm, on vs off): oled +14%,
+  showcase +16%, coremark +5%, dfu +3%.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —
