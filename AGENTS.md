@@ -31,7 +31,7 @@ Full-system emulation of an STM32F103C8 (Bluepill) microcontroller running real 
 ```
 
 ### Performance
-- ~80M IPS real-world, native CPU (periph39 200M in ~2.5s; lighter firmware 118–140 headless; browser periph39 typically 55–70 on a shared/contended box, spiking past 110 when the host boosts — single-shot browser windows are frequency-dominated, so only interleaved ratios are trustworthy) WITH full MPU enforcement live on every access — the off-state fast path (plain-static `MPU_ON` mirror + cold-outlined slow/periph arms + raw fetch, see docs/CPU.md "Memory protection") holds the cost to ~5% over gates-compiled-out (2.6s). Lesson: ~1B gate evals/run make ANY per-access call shape cost ~30% in V8 (measured 2.6→3.9s across method-call, inlined-check, Cell-field, atomic-mirror and cold_path variants); only zero-call + small-hot-skeleton recovered it (3.9→2.8s). (Fusion rounds v1–v4 then cut dispatch: periph39 2.8s → 2.5s; see CHANGELOG.)
+- ~90M IPS real-world, native CPU (periph39 200M in ~2.2s; lighter firmware 118–140 headless; browser periph39 typically 55–70 on a shared/contended box, spiking past 110 when the host boosts — single-shot browser windows are frequency-dominated, so only interleaved ratios are trustworthy) WITH full MPU enforcement live on every access — the off-state fast path (plain-static `MPU_ON` mirror + cold-outlined slow/periph arms + raw fetch, see docs/CPU.md "Memory protection") holds the cost to ~5% over gates-compiled-out (2.6s). Lesson: ~1B gate evals/run make ANY per-access call shape cost ~30% in V8 (measured 2.6→3.9s across method-call, inlined-check, Cell-field, atomic-mirror and cold_path variants); only zero-call + small-hot-skeleton recovered it (3.9→2.8s). (Fusion rounds v1–v4 then cut dispatch: periph39 2.8s → 2.5s; table + fast-tags + hoists + scaffold batch → 2.2s; see CHANGELOG.)
 - **step_batch ticks once per batch, not per instruction** (`src/lib.rs`): all peripheral `tick()`s are instruction-delta based, so advancing INSTRUCTION_COUNT by `count` + one `sys.tick()` is equivalent but ~100K× cheaper — was ~55% of runtime (wasm-function[36]/[364] under `step_batch` in cpu-prof); **3.8× speedup** (21.2s → 5.6s for 100M). Requires per-batch tickers to process ALL accumulated ticks — `tim.rs advance()` had a `ticks.min(1000)` cap that dropped timer events (TIM2 IRQ never fired: CNT stuck at 12K of ARR=36K); removed.
 - Peripheral access hooks are NOT a bottleneck anymore: measured 0.001 accesses/instruction (~27K per 50M instr) for the periph37 firmware
 - `step_batch()` gave 3.15× speedup over per-instruction `step()`
@@ -46,7 +46,7 @@ Full-system emulation of an STM32F103C8 (Bluepill) microcontroller running real 
 ## Current Status (all work below is committed; see git log)
 
 > Last updated: 2026-09-15. The emulator is **feature-complete and stable**:
-> 764 unit tests, 39/39 firmware checks, ~80M IPS headless (~117–119 in Chromium; shared-box noise ±30%). Recent work:
+> 764 unit tests, 39/39 firmware checks, ~90M IPS headless (~55–80 in Chromium, higher on boost; shared-box noise ±30%). Recent work:
 > `--help`/`--verbose` CLI + better errors, comprehensive About page, **removed all
 > `panic!` from user-input paths** (bad pin names / empty bus ranges now degrade
 > gracefully instead of aborting the WASM module), and an audit document

@@ -9,7 +9,7 @@ A full-system emulator for the **STM32F1 family** (STM32F103C8 "Blue Pill",
 STM32F105, GD32F103, Maple Mini, Nucleo-F103RB, etc.)
 that runs **real, unmodified Arduino / STM32Cube firmware** in Node.js or the browser.
 
-**~80M instructions/sec** headless (periph39 `200M` in `~2.5s`, lighter firmware `118–140M`, native Rust CPU + Rust peripherals in one WASM module with full MPU enforcement) and typically **55–70 MIPS in real Chromium** on a shared box (spiking past 110 when the host boosts — browser windows are frequency-dominated). The interactive page loop stays frame-budgeted.
+**~90M instructions/sec** headless (periph39 `200M` in `~2.2s`, lighter firmware `118–140M`, native Rust CPU + Rust peripherals in one WASM module with full MPU enforcement) and typically **55–70 MIPS in real Chromium** on a shared box (spiking past 110 when the host boosts — browser windows are frequency-dominated). The interactive page loop stays frame-budgeted.
 
 > **Project status: complete.** The emulator is feature-complete and stable —
 > every peripheral in scope is modeled and proven (764 unit checks, 39/39
