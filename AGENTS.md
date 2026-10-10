@@ -756,6 +756,16 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   full-state compare) + census 0-gap both widths + fuzz seeds 1+4
   0 divergences. In-binary A/B (same wasm, on vs off): oled +14%,
   showcase +16%, coremark +5%, dfu +3%.
+- **Superoperators v2 (follow-up, same sprint)**: 19 more pairs from a
+  static Capstone pair census over all 44 shipped ELFs (branch-first
+  pairs excluded — static adjacency isn't dynamic sequence); shared
+  second-op tails + verbatim first-bodies. Fixed 3 real hazards with
+  tests: mid-pair fault/halt interlock (swd watch tests caught it),
+  `q != 0` on LSL-second checks (edge-fallback sentinel), fusion_off in
+  fixed-step harnesses (run_snippet, diffuzz — pattern padding itself
+  fuses, e.g. 0x2323). Proof: 19 new differential suites (~125K cases),
+  lib 104/104, census + fuzz green. In-binary A/B (v1+v2 on vs off):
+  oled +21%, showcase +22%, coremark +4%, dfu +1%, nothing regresses.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

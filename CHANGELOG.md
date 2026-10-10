@@ -67,6 +67,33 @@ All notable changes to this project will be documented in this file.
   (same wasm, templates on vs off via a temporary export, since removed):
   oled +14%, showcase +16%, coremark +5%, dfu +3% — first-op dispatch is
   gone, one advance instead of two.
+- Superoperators v2 (19 more pairs, same discipline): static pair census
+  over all 44 shipped ELFs (65K adjacent 16-bit pairs via Capstone)
+  ranked the templates — (STR,LDR) 1660, (LDR,LSL) 1062, (MOV,B) 1053,
+  (LDR,LDR) 997, (MOV,LDRlit) 885, (LSL,MOV) 1162, (MOV,MOV) 731,
+  (LSL,LSL) 692, (STR,MOV) 673, (LDRlit,LDRlit) 582, (MOV,STR) 558,
+  (LDR,CBZ) 561, (MOV,LDR) 459, (LDR,CMP) 369, (LDRlit,STR) 348,
+  (SUBS-imm,CMP) 271, (STR,B) 402, (LDR,Bcc), (STR,LDRlit) 244.
+  Branch-first pairs (b/ldr, bx/movs, pop/movs) are never fused — static
+  adjacency is not dynamic sequence. Shared second-op tails + per-pair
+  first-bodies (verbatim copies). Three real hazards found and fixed
+  while proving it, all with tests: (1) fault/halt mid-pair — op1 can
+  MPU-fault or trip a watchpoint, so every tail opens with a
+  `fused_interlock` (fault: count 0, PC stays; halt: advance + count 1;
+  proven by the swd watch tests, which caught it); (2) the edge-fallback
+  lookahead is 0 and 0x0000 is the only second-shape matching it — both
+  LSL-second checks carry `q != 0`; (3) fixed-step harnesses
+  (run_snippet budgets, diffuzz stop counts) outrun under fusion, and the
+  sterile pattern padding itself forms fusable shapes (0x2323 is
+  MOV-imm) — both harnesses run fusion_off with a documented rationale
+  (fused==legacy proven natively, legacy==oracle in the gate, so
+  transitively fused==oracle). Proof: 19 new differential suites
+  (~125K pair-cases incl. taken+untaken for B/CBZ/Bcc, C/V preservation
+  across MOV seconds, overlapping regs) + extended IT-fallback —
+  24/24 fused suites green; lib 104/104; census 0-gap both widths; fuzz
+  seeds 1+4 zero divergences. In-binary A/B (v1+v2 on vs off):
+  oled +21%, showcase +22%, coremark +4%, dfu +1% — no firmware regresses
+  (every ratio below 1.0).
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

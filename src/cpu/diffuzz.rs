@@ -59,6 +59,16 @@ fn diffuzz_exec() {
     let _held = crate::test_util::lock();
     init();
     let sys = sys();
+    // Fusion OFF for the oracle comparison: cases budget steps assuming one
+    // retired instruction per step, and the sterile pattern padding happens
+    // to form fusable shapes (e.g. 0x2323 is MOV-imm) — a fused pair would
+    // retire 2 ops in one step and outrun the oracle's exact stop count.
+    // Fusion equivalence is proven separately by the fused_*_matches_legacy
+    // differential suites (fused vs fusion_off, full-state compare), so the
+    // oracle gate stays valid as legacy-vs-silicon-truth (transitively:
+    // fused == legacy == oracle). Same rationale as run_snippet in
+    // isa_tests.rs.
+    super::thumb::fusion_off(true);
     let mut out = String::new();
     for line in text.lines() {
         let line = line.trim();
@@ -115,5 +125,6 @@ fn diffuzz_exec() {
         out.push_str(&cols.join(" "));
         out.push('\n');
     }
+    super::thumb::fusion_off(false);
     std::fs::write(&out_path, out).unwrap();
 }

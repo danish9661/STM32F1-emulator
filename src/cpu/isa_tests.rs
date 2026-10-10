@@ -15,6 +15,12 @@ use super::{
 fn run_snippet(code: &[u16], regs: &[(usize, u32)]) -> (Cpu, FlatMemory) {
     crate::init();
     let sys = crate::sys();
+    // Fusion OFF here on purpose: these probes assert exact PCs after fixed
+    // step budgets, and a fused pair retires 2 instructions per step — the
+    // budget math assumes 1/step. Fusion equivalence itself is proven by the
+    // fused_*_matches_legacy differential suites (fused vs fusion_off, full
+    // state compare), so the probes stay valid as single-op semantics tests.
+    super::thumb::fusion_off(true);
     let mut cpu = Cpu::new(0x20008000, 0x20002001);
     cpu.dsp = false;
     let mut mem = FlatMemory::new(0x1000, 0x10000);
@@ -25,6 +31,7 @@ fn run_snippet(code: &[u16], regs: &[(usize, u32)]) -> (Cpu, FlatMemory) {
         cpu.regs.r[r] = v;
     }
     cpu.run(sys, &mut mem, code.len() as u32 / 2 + 2);
+    super::thumb::fusion_off(false);
     (cpu, mem)
 }
 
@@ -825,8 +832,9 @@ fn fused_it_fallback_matches_legacy() {
     crate::init();
     let sys = crate::sys();
     // ITE MI (0xBF0C): cmp then bne, first suppressed when N==0.
+    // v2 pairs exercise the same it_n == 0 gate in every new first-arm.
     for flags in [0x00000000u32, 0x80000000] {
-        for op_pair in [(0x42A3u16, 0xD101u16)] {
+        for op_pair in [(0x42A3u16, 0xD101u16), (0x6019u16, 0x6821u16), (0x2001u16, 0xE7FEu16), (0x4802u16, 0x4903u16)] {
             let mut out = Vec::new();
             for fused in [true, false] {
                 super::thumb::fusion_off(!fused);
@@ -839,8 +847,10 @@ fn fused_it_fallback_matches_legacy() {
                 for (i, w) in code.iter().enumerate() {
                     mem.write16(0x20002000 + (i as u32) * 2, *w);
                 }
-                cpu.regs.r[3] = 5;
-                cpu.regs.r[4] = 5;
+                cpu.regs.r[0] = 0;
+                cpu.regs.r[1] = 0xAB;
+                cpu.regs.r[3] = 0x20003000;
+                cpu.regs.r[4] = 0x20003010;
                 cpu.regs.xpsr = (cpu.regs.xpsr & !0xF0000000) | (flags & 0xF0000000);
                 cpu.regs.r[15] = 0x20002001;
                 cpu.run(sys, &mut mem, 8);
@@ -850,4 +860,368 @@ fn fused_it_fallback_matches_legacy() {
             assert!(snap_eq(&out[0], &out[1]), "IT fallback diverges at flags {:08x}", flags);
         }
     }
+}
+
+// ---- Superoperator v2 differential: same fused-vs-legacy discipline ----
+fn op_str(rn: usize, rt: usize, imm5: u32) -> u16 {
+    0x6000 | (((imm5 & 31) as u16) << 6) | (((rn & 7) as u16) << 3) | ((rt & 7) as u16)
+}
+fn op_ldri(rn: usize, rt: usize, imm5: u32) -> u16 {
+    0x6800 | (((imm5 & 31) as u16) << 6) | (((rn & 7) as u16) << 3) | ((rt & 7) as u16)
+}
+fn op_mov(rd: usize, imm: u32) -> u16 {
+    0x2000 | (((rd & 7) as u16) << 8) | ((imm & 0xFF) as u16)
+}
+fn op_lsl(rd: usize, rs: usize, imm5: u32) -> u16 {
+    (((imm5 & 31) as u16) << 6) | (((rs & 7) as u16) << 3) | ((rd & 7) as u16)
+}
+fn op_lit(rt: usize, imm8: u32) -> u16 {
+    0x4800 | (((rt & 7) as u16) << 8) | ((imm8 & 0xFF) as u16)
+}
+fn op_cmp(rn: usize, imm: u32) -> u16 {
+    0x2800 | (((rn & 7) as u16) << 8) | ((imm & 0xFF) as u16)
+}
+fn op_subsi(rd: usize, rn: usize, im3: u32) -> u16 {
+    0x1E00 | (((im3 & 7) as u16) << 6) | (((rn & 7) as u16) << 3) | ((rd & 7) as u16)
+}
+fn op_b(off: i32) -> u16 {
+    0xE000 | ((off as u16) & 0x7FF)
+}
+fn op_cbz(rn: usize, cbnz: bool) -> u16 {
+    // nz = 0 -> fallthrough parks in the b-self landing; rn selects taken.
+    0xB100 | ((rn & 7) as u16) | if cbnz { 0x800 } else { 0 }
+}
+fn op_bcc(cc: u32, off: i32) -> u16 {
+    if cc == 0xE {
+        0xDE00 | ((off as u16) & 0xFF)
+    } else if cc == 0xF {
+        0xDF00 | ((off as u16) & 0xFF)
+    } else {
+        0xD000 | (((cc & 15) as u16) << 8) | ((off as u16) & 0xFF)
+    }
+}
+fn scratch(rn: usize) -> (usize, u32) {
+    (rn, 0x20003000 + (rn as u32) * 16)
+}
+
+#[test]
+fn fused2_str_ldri_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_str(rn1, rt1, i5), op_ldri(rn2, rt2, j5),
+                &[scratch(rn1), scratch(rn2)], 0, 0x5000 + n, "str-ldri");
+            n += 1;
+        } } }
+    } } }
+    assert!(n == 16384);
+}
+
+#[test]
+fn fused2_str_mov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rd2 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+            for &flags in &[0u32, 0xF0000000] {
+                check_pair(sys, op_str(rn1, rt1, i5), op_mov(rd2, imm),
+                    &[scratch(rn1)], flags, 0x5100 + n, "str-mov");
+                n += 1;
+            }
+        } }
+    } } }
+    assert!(n == 8192);
+}
+
+#[test]
+fn fused2_str_b_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for &off in &[-4i32, 100] {
+            check_pair(sys, op_str(rn1, rt1, i5), op_b(off), &[scratch(rn1)], 0, 0x5200 + n, "str-b");
+            n += 1;
+        }
+    } } }
+    assert!(n == 256);
+}
+
+#[test]
+fn fused2_str_lit_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rt2 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+            check_pair(sys, op_str(rn1, rt1, i5), op_lit(rt2, imm8), &[scratch(rn1)], 0, 0x5300 + n, "str-lit");
+            n += 1;
+        } }
+    } } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_ldri_lsl_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rd2 in 0..8 { for rs2 in 0..8 { for &j5 in &[0u32, 31] {
+            for &flags in &[0u32, 0x20000000] {
+                check_pair(sys, op_ldri(rn1, rt1, i5), op_lsl(rd2, rs2, j5),
+                    &[scratch(rn1)], flags, 0x5400 + (n & 0xFFFF), "ldri-lsl");
+                n += 1;
+            }
+        } } }
+    } } }
+    assert!(n == 32768);
+}
+
+#[test]
+fn fused2_ldri_ldri_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_ldri(rn1, rt1, i5), op_ldri(rn2, rt2, j5),
+                &[scratch(rn1), scratch(rn2)], 0, 0x5500 + (n & 0xFFFF), "ldri-ldri");
+            n += 1;
+        } } }
+    } } }
+    assert!(n == 16384);
+}
+
+#[test]
+fn fused2_ldri_cbz_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rn2 in 0..8 { for cbnz in [false, true] {
+            // rn2 = 0 vs nonzero exercises taken + fallthrough both ways.
+            for &rv in &[0u32, 5] {
+                let mut regs = vec![scratch(rn1)];
+                regs.push((rn2, rv));
+                check_pair(sys, op_ldri(rn1, rt1, i5), op_cbz(rn2, cbnz), &regs, 0, 0x5600 + n, "ldri-cbz");
+                n += 1;
+            }
+        } }
+    } } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_ldri_cmp_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rn in 0..8 { for &imm in &[0u32, 255] {
+            for &flags in &[0u32, 0xF0000000] {
+                check_pair(sys, op_ldri(rn1, rt1, i5), op_cmp(rn, imm), &[scratch(rn1)], flags, 0x5700 + (n & 0xFFFF), "ldri-cmp");
+                n += 1;
+            }
+        } }
+    } } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_ldri_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for cc in 0..16 {
+            for taken_case in [false, true] {
+                for &flags in &[0u32, 0xF0000000] {
+                    let off: i32 = if taken_case { -4 } else { 100 };
+                    let (a, b) = run_pair_both(sys, op_ldri(rn1, rt1, i5), op_bcc(cc, off), &[scratch(rn1)], flags, 0x5800 + n);
+                    assert!(snap_eq(&a, &b), "fused/legacy diverge for ldri-bcc cc={}", cc);
+                    if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                    n += 1;
+                }
+            }
+        }
+    } } }
+    assert!(taken > 100 && untaken > 100);
+    assert!(n == 8192);
+}
+
+#[test]
+fn fused2_mov_b_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd1 in 0..8 { for &imm in &[0u32, 1, 127, 255, 128] {
+        for &off in &[-4i32, 100] {
+            for &flags in &[0u32, 0xF0000000] {
+                check_pair(sys, op_mov(rd1, imm), op_b(off), &[], flags, 0x5900 + n, "mov-b");
+                n += 1;
+            }
+        }
+    } }
+    assert!(n == 160);
+}
+
+#[test]
+fn fused2_mov_lit_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd1 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+        for rt2 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+            for &flags in &[0u32, 0x20000000] {
+                check_pair(sys, op_mov(rd1, imm), op_lit(rt2, imm8), &[], flags, 0x5A00 + n, "mov-lit");
+                n += 1;
+            }
+        } }
+    } }
+    assert!(n == 2048);
+}
+
+#[test]
+fn fused2_mov_mov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd1 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+        for rd2 in 0..8 { for &imm2 in &[0u32, 1, 127, 255] {
+            for &flags in &[0u32, 0xF0000000, 0x20000000] {
+                check_pair(sys, op_mov(rd1, imm), op_mov(rd2, imm2), &[], flags, 0x5B00 + (n & 0xFFFF), "mov-mov");
+                n += 1;
+            }
+        } }
+    } }
+    assert!(n == 3072);
+}
+
+#[test]
+fn fused2_mov_str_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd1 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_mov(rd1, imm), op_str(rn2, rt2, j5), &[scratch(rn2)], 0, 0x5C00 + (n & 0xFFFF), "mov-str");
+            n += 1;
+        } } }
+    } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_mov_ldri_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd1 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_mov(rd1, imm), op_ldri(rn2, rt2, j5), &[scratch(rn2)], 0, 0x5D00 + (n & 0xFFFF), "mov-ldri");
+            n += 1;
+        } } }
+    } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_lsl_mov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd in 0..8 { for rs in 0..8 { for &i5 in &[0u32, 1, 31] {
+        for &flags in &[0u32, 0x20000000] {
+            for rd2 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+                check_pair(sys, op_lsl(rd, rs, i5), op_mov(rd2, imm), &[], flags, 0x5E00 + (n & 0xFFFF), "lsl-mov");
+                n += 1;
+            } }
+        }
+    } } }
+    assert!(n == 12288);
+}
+
+#[test]
+fn fused2_lsl_lsl_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rd in 0..8 { for rs in 0..8 { for &i5 in &[0u32, 31] {
+        for &flags in &[0u32, 0x20000000] {
+            for rd2 in 0..8 { for rs2 in 0..8 { for &j5 in &[0u32, 31] {
+                check_pair(sys, op_lsl(rd, rs, i5), op_lsl(rd2, rs2, j5), &[], flags, 0x5F00 + (n & 0xFFFFFF), "lsl-lsl");
+                n += 1;
+            } } }
+        }
+    } } }
+    assert!(n == 32768);
+}
+
+#[test]
+fn fused2_lit_lit_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rt1 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+        for rt2 in 0..8 { for &imm8b in &[0u32, 1, 2, 3] {
+            check_pair(sys, op_lit(rt1, imm8), op_lit(rt2, imm8b), &[], 0, 0x6000 + n, "lit-lit");
+            n += 1;
+        } }
+    } }
+    assert!(n == 1024);
+}
+
+#[test]
+fn fused2_lit_str_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rt1 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+        for rn2 in 0..8 { for rt2 in 0..8 { for &j5 in &[0u32, 31] {
+            check_pair(sys, op_lit(rt1, imm8), op_str(rn2, rt2, j5), &[scratch(rn2)], 0, 0x6100 + (n & 0xFFFF), "lit-str");
+            n += 1;
+        } } }
+    } }
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused2_subsi_cmp_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd in 0..8 { for rn in 0..8 { for &im3 in &[0u32, 7] {
+        for rn2 in 0..8 { for &imm in &[0u32, 255] {
+            for &flags in &[0u32, 0xF0000000] {
+                check_pair(sys, op_subsi(rd, rn, im3), op_cmp(rn2, imm), &[], flags, 0x6200 + (n & 0xFFFF), "subsi-cmp");
+                n += 1;
+            }
+        } }
+    } } }
+    assert!(n == 4096);
 }

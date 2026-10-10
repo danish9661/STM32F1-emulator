@@ -298,6 +298,9 @@ fn fused_ldr_ldr(
     let rt1 = ((o1 >> 8) & 7) as usize;
     let base1 = (pc + 4) & !3;
     cpu.regs.r[rt1] = mem.read32(base1.wrapping_add((o1 & 0xFF) * 4));
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
     let (rn2, rt2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
     let addr2 = rr(cpu, rn2, pc.wrapping_add(2)).wrapping_add(((o2 >> 6) & 0x1F) * 4);
     cpu.regs.r[rt2] = mem.read32(addr2);
@@ -314,6 +317,9 @@ fn fused_sub_cmp(
     let (rd, rs, rn) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize, ((o1 >> 6) & 7) as usize);
     let r = sub_flags(cpu, rr(cpu, rs, pc), rr(cpu, rn, pc), 1);
     cpu.regs.r[rd] = r;
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
     let (rs2, rd2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
     cpu.it_suppress = false; // mirror CMP arm (no-op under the it_n gate)
     sub_flags(cpu, rr(cpu, rd2, pc.wrapping_add(2)), rr(cpu, rs2, pc.wrapping_add(2)), 1);
@@ -327,6 +333,9 @@ fn fused_sub_cmp(
 fn fused_bcc_tail(
     cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32,
 ) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
     let cc = (o2 >> 8) & 0xF;
     let imm = sx(((o2 & 0xFF) << 1) as u32, 9);
     let pc2 = pc.wrapping_add(2);
@@ -346,6 +355,296 @@ fn fused_cmp_bcc(
     let rn = ((o1 >> 8) & 7) as usize;
     cpu.it_suppress = false; // mirror CMP arm (no-op under the it_n gate)
     sub_flags(cpu, rr(cpu, rn, pc), o1 & 0xFF, 1);
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
+/// Inter-op stop check for fused pairs (v1 AND v2): op1 may have faulted
+/// (MPU data denial) or tripped a debug halt (watchpoint store). Legacy
+/// retires op1 alone — fault: PC stays at op1 with count 0 (run loop
+/// records the fault); halt/sleep: op1 completed so advance one slot with
+/// count 1, and the loop observes the halt before op2. Either way op2 must
+/// NOT run. Returns Some(count) when stopped, None to continue into op2.
+/// Near-zero cost (two predictable branches, fusion path only).
+#[inline(always)]
+fn fused_interlock(cpu: &mut Cpu, pc: u32) -> Option<u32> {
+    if cpu.fault.is_some() {
+        return Some(0);
+    }
+    if cpu.sleeping || crate::system::debug_halted() {
+        adv(cpu, pc, 2);
+        return Some(1);
+    }
+    None
+}
+
+/// Shared second-op tails for v2 fusion pairs: each executes the o2 body
+/// at pc+2 (verbatim from its arm, sequential order preserved) with a
+/// single pc+4 advance. Callers guarantee it_n == 0 and both shapes.
+fn fused_tail_ldri(cpu: &mut Cpu, _sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let (rn2, rt2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
+    let addr2 = rr(cpu, rn2, pc2).wrapping_add(((o2 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt2] = mem.read32(addr2);
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_lit(cpu: &mut Cpu, _sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let rt2 = ((o2 >> 8) & 7) as usize;
+    let base2 = (pc2 + 4) & !3;
+    cpu.regs.r[rt2] = mem.read32(base2.wrapping_add((o2 & 0xFF) * 4));
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_str(cpu: &mut Cpu, _sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let (rn2, rt2) = (((o2 >> 3) & 7) as usize, (o2 & 7) as usize);
+    let addr2 = rr(cpu, rn2, pc2).wrapping_add(((o2 >> 6) & 0x1F) * 4);
+    mem.write32(addr2, rr(cpu, rt2, pc2));
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_mov(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let rd2 = ((o2 >> 8) & 7) as usize;
+    cpu.regs.r[rd2] = o2 & 0xFF;
+    nz(cpu, o2 & 0xFF);
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_lsl(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let (rd2, rs2) = ((o2 & 7) as usize, ((o2 >> 3) & 7) as usize);
+    let im2 = (o2 >> 6) & 0x1F;
+    let v2 = rr(cpu, rs2, pc2);
+    let (r2, co2) = shift_op(v2, 0, im2, carry(cpu));
+    cpu.regs.r[rd2] = r2;
+    nz(cpu, r2);
+    if !cpu.it_suppress {
+        cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co2 << 29);
+    }
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_cmp(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let rn2 = ((o2 >> 8) & 7) as usize;
+    cpu.it_suppress = false; // mirror CMP arm (no-op under the it_n gate)
+    sub_flags(cpu, rr(cpu, rn2, pc2), o2 & 0xFF, 1);
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_b(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32,
+) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let imm = sx(((o2 & 0x7FF) << 1) as u32, 12);
+    // B completes the second op: 1 (first) + branch's 1 (targets are always
+    // Thumb-aligned here, but keep the +1 generic like fused_bcc_tail).
+    branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2) + 1
+}
+
+fn fused_tail_cbz(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32,
+) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let nz = ((o2 >> 3) & 0x1F) * 2 + ((o2 >> 9) & 1) * 64;
+    let rn = (o2 & 7) as usize;
+    let take = if o2 & 0x800 == 0 {
+        rr(cpu, rn, pc2) == 0
+    } else {
+        rr(cpu, rn, pc2) != 0
+    };
+    if take {
+        return branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(nz)) | 1, pc2, o2 as u16, 0, 2) + 1;
+    }
+    adv(cpu, pc, 4);
+    2
+}
+
+// ---- v2 fused pairs (first-body verbatim from its arm + shared tail) ----
+fn fused_str_ldri(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    mem.write32(addr, rr(cpu, rt, pc));
+    fused_tail_ldri(cpu, sys, mem, o2, pc)
+}
+fn fused_str_mov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    mem.write32(addr, rr(cpu, rt, pc));
+    fused_tail_mov(cpu, sys, mem, o2, pc)
+}
+fn fused_str_b(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    mem.write32(addr, rr(cpu, rt, pc));
+    fused_tail_b(cpu, sys, mem, o2, pc)
+}
+fn fused_str_lit(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    mem.write32(addr, rr(cpu, rt, pc));
+    fused_tail_lit(cpu, sys, mem, o2, pc)
+}
+fn fused_ldri_lsl(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_lsl(cpu, sys, mem, o2, pc)
+}
+fn fused_ldri_ldri(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_ldri(cpu, sys, mem, o2, pc)
+}
+fn fused_ldri_cbz(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_cbz(cpu, sys, mem, o2, pc)
+}
+fn fused_ldri_cmp(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_cmp(cpu, sys, mem, o2, pc)
+}
+fn fused_mov_b(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    cpu.regs.r[rd] = o1 & 0xFF; nz(cpu, o1 & 0xFF);
+    fused_tail_b(cpu, sys, mem, o2, pc)
+}
+fn fused_mov_lit(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    cpu.regs.r[rd] = o1 & 0xFF; nz(cpu, o1 & 0xFF);
+    fused_tail_lit(cpu, sys, mem, o2, pc)
+}
+fn fused_mov_mov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    cpu.regs.r[rd] = o1 & 0xFF; nz(cpu, o1 & 0xFF);
+    fused_tail_mov(cpu, sys, mem, o2, pc)
+}
+fn fused_mov_str(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    cpu.regs.r[rd] = o1 & 0xFF; nz(cpu, o1 & 0xFF);
+    fused_tail_str(cpu, sys, mem, o2, pc)
+}
+fn fused_mov_ldri(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    cpu.regs.r[rd] = o1 & 0xFF; nz(cpu, o1 & 0xFF);
+    fused_tail_ldri(cpu, sys, mem, o2, pc)
+}
+fn fused_lsl_mov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rd, rs) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize);
+    let im = (o1 >> 6) & 0x1F; let v = rr(cpu, rs, pc);
+    let (r, co) = shift_op(v, 0, im, carry(cpu)); cpu.regs.r[rd] = r;
+    nz(cpu, r);
+    if !cpu.it_suppress {
+    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+    }
+    fused_tail_mov(cpu, sys, mem, o2, pc)
+}
+fn fused_lsl_lsl(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rd, rs) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize);
+    let im = (o1 >> 6) & 0x1F; let v = rr(cpu, rs, pc);
+    let (r, co) = shift_op(v, 0, im, carry(cpu)); cpu.regs.r[rd] = r;
+    nz(cpu, r);
+    if !cpu.it_suppress {
+    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+    }
+    fused_tail_lsl(cpu, sys, mem, o2, pc)
+}
+fn fused_lit_lit(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rt = ((o1 >> 8) & 7) as usize; let base = (pc + 4) & !3;
+    cpu.regs.r[rt] = mem.read32(base.wrapping_add((o1 & 0xFF) * 4));
+    fused_tail_lit(cpu, sys, mem, o2, pc)
+}
+fn fused_lit_str(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rt = ((o1 >> 8) & 7) as usize; let base = (pc + 4) & !3;
+    cpu.regs.r[rt] = mem.read32(base.wrapping_add((o1 & 0xFF) * 4));
+    fused_tail_str(cpu, sys, mem, o2, pc)
+}
+fn fused_subsi_cmp(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rd, rn) = ((o1 & 7) as usize, ((o1 >> 3) & 7) as usize);
+    let im = (o1 >> 6) & 7;
+    let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1); cpu.regs.r[rd] = r;
+    fused_tail_cmp(cpu, sys, mem, o2, pc)
+}
+
+/// Fused (LDR-imm, Bcc): load then loop-test, via the shared Bcc tail.
+fn fused_ldri_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
     fused_bcc_tail(cpu, sys, mem, o2, pc)
 }
 
@@ -464,6 +763,13 @@ pub fn exec16(
         if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
             return fused_ldr_ldr(cpu, sys, mem, o, q, pc);
         }
+        // v2 fusion: double-literal + literal-then-spill idioms.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
+            return fused_lit_lit(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6000 && fusion_live() {
+            return fused_lit_str(cpu, sys, mem, o, q, pc);
+        }
         let rt = ((o >> 8) & 7) as usize;
         let base = (pc + 4) & !3;
         cpu.regs.r[rt] = mem.read32(base.wrapping_add((o & 0xFF) * 4));
@@ -471,6 +777,26 @@ pub fn exec16(
         return 1;
     }
     if o & 0xF800 == 0x6800 {
+        // v2 fusion: LDR-fed shift/compare/branch/double-load idioms.
+        // q != 0: the edge-fallback lookahead is 0, and 0x0000 is the ONLY
+        // second-shape that matches it — without this, an LSL at a region
+        // edge would fuse against a halfword the legacy path never read.
+        // (Real 0x0000 seconds in mapped regions still fuse via fetch32.)
+        if cpu.it_n == 0 && q != 0 && (q & 0xF800) == 0x0000 && fusion_live() {
+            return fused_ldri_lsl(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
+            return fused_ldri_ldri(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF500) == 0xB100 && fusion_live() {
+            return fused_ldri_cbz(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x2800 && fusion_live() {
+            return fused_ldri_cmp(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
+            return fused_ldri_bcc(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
         cpu.regs.r[rt] = mem.read32(addr);
@@ -617,6 +943,14 @@ pub fn exec16(
         if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
             return fused_lsl_bcc(cpu, sys, mem, o, q, pc);
         }
+        // v2 fusion: shift-then-MOV / double-shift idioms.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x2000 && fusion_live() {
+            return fused_lsl_mov(cpu, sys, mem, o, q, pc);
+        }
+        // q != 0: see the edge-fallback note on the LDR-imm LSL check.
+        if cpu.it_n == 0 && q != 0 && (q & 0xF800) == 0x0000 && fusion_live() {
+            return fused_lsl_lsl(cpu, sys, mem, o, q, pc);
+        }
         let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
         let im = (o >> 6) & 0x1F;
         let v = rr(cpu, rs, pc);
@@ -714,6 +1048,20 @@ pub fn exec16(
         return 1;
     }
     if o & 0xF800 == 0x6000 {
+        // v2 fusion: spill/fill (STR,LDR), STR+MOV, STR+B, STR+LDRlit.
+        // fusion_live() checked LAST (atomic load only on shape match).
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
+            return fused_str_ldri(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x2000 && fusion_live() {
+            return fused_str_mov(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0xE000 && fusion_live() {
+            return fused_str_b(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
+            return fused_str_lit(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
         mem.write32(addr, rr(cpu, rt, pc));
@@ -742,6 +1090,22 @@ pub fn exec16(
     }
     // MOVS/CMP/ADDS/SUBS imm8
     if o & 0xF800 == 0x2000 {
+        // v2 fusion: MOV-fed branch/literal/double-mov/spill/fill idioms.
+        if cpu.it_n == 0 && (q & 0xF800) == 0xE000 && fusion_live() {
+            return fused_mov_b(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
+            return fused_mov_lit(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x2000 && fusion_live() {
+            return fused_mov_mov(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6000 && fusion_live() {
+            return fused_mov_str(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && (q & 0xF800) == 0x6800 && fusion_live() {
+            return fused_mov_ldri(cpu, sys, mem, o, q, pc);
+        }
         let rd = ((o >> 8) & 7) as usize;
         cpu.regs.r[rd] = o & 0xFF;
         // Predicated (in-IT) T1 MOVS preserves flags (matches silicon and
@@ -756,6 +1120,10 @@ pub fn exec16(
         return 1;
     }
     if o & 0xFE00 == 0x1E00 {
+        // v2 fusion: SUBS-imm loop-decrement + CMP-imm test idiom.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x2800 && fusion_live() {
+            return fused_subsi_cmp(cpu, sys, mem, o, q, pc);
+        }
         let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
         let im = (o >> 6) & 7;
         let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1);
