@@ -26,6 +26,7 @@ tests/arduino_dfu/build/
 tests/arduino_pwm_wave/build/
 tests/arduino_i2c_slave/build/
 tests/arduino_i2c_js_slave/build/
+tests/arduino_dht_probe/build/
 tests/arduino_mini_rtos/build/
 tests/arduino_sd_logger/build/
 tests/arduino_board_demo/build-pill/

@@ -357,9 +357,9 @@ export class STM32F1 {
 
     /** Register the pin-change router on the current emulator. */
     _wire() {
-        this._pinUnsub = this._emu.onPinChange((port, pin, level) => {
+        this._pinUnsub = this._emu.onPinChange((port, pin, level, tcount) => {
             const set = this._pinListeners.get(port + ':' + pin);
-            if (set) for (const cb of set) cb(level === 1);
+            if (set) for (const cb of set) cb(level === 1, tcount);
         });
     }
 

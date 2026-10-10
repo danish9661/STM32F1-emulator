@@ -57,6 +57,11 @@ Same invariant as the Pico spec: after §1–2, any future component on GPIO /
 I2C-RW / SPI-duplex / UART / ADC-in / PWM-out works with zero further engine
 changes. I2C **read** is mandatory, not optional — every I2C sensor in the
 registry (MPU6050, BMP180, ADXL345, DS1307, EEPROM, PCA9685) reads.
+GPIO input readback follows RM0008 Table 20 — floating (CNF=01) reads the
+wired driver else 0, pull-up/down (CNF=10, e.g. Arduino `INPUT_PULLUP`)
+reads the driver else the ODR-selected pull, push-pull output IDR reads the
+driven level — so bit-banged single-wire firmware (SoftwareSerial RX,
+DHT22 DATA) samples real wire levels via IDR with no engine changes.
 
 ## Acceptance
 

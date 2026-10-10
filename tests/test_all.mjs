@@ -81,6 +81,31 @@ assert_eq(gpio_read_input(0, 0), true, 'GPIO PA0 input set high');
 gpio_set_input(0, 0, false); // PA0 low
 assert_eq(gpio_read_input(0, 0), false, 'GPIO PA0 input set low');
 
+// IDR follows the injected level in input pull-up mode (MODE=00 CNF=10,
+// nibble 0x8 — Arduino INPUT_PULLUP). A pulled-up pin with no driver
+// reads the ODR-selected pull, not 0 (DHT22 DATA read 0 forever).
+gpioa_crl = (periph_read(0x40010800, 4) & ~0xF) | 0x8; // PA0 = input pull-up
+periph_write(0x40010800, 4, gpioa_crl);
+periph_write(0x4001080C, 4, periph_read(0x4001080C, 4) | 1); // ODR0=1: pull-up
+gpio_set_input(0, 0, true);
+assert_eq(periph_read(0x40010808, 4) & 1, 1, 'GPIO PA0 pull-up + ext HIGH reads 1');
+gpio_set_input(0, 0, false);
+assert_eq(periph_read(0x40010808, 4) & 1, 0, 'GPIO PA0 pull-up + ext LOW reads 0');
+// Floating (nibble 0x4, CNF=01): external driver else 0.
+gpioa_crl = (periph_read(0x40010800, 4) & ~0xF) | 0x4; // PA0 = floating
+periph_write(0x40010800, 4, gpioa_crl);
+gpio_set_input(0, 0, true);
+assert_eq(periph_read(0x40010808, 4) & 1, 1, 'GPIO PA0 floating + ext HIGH reads 1');
+gpio_set_input(0, 0, false);
+assert_eq(periph_read(0x40010808, 4) & 1, 0, 'GPIO PA0 floating + ext LOW reads 0');
+// Push-pull output readback: the strong ODR driver wins over a stale
+// injected level (firmware wake-LOW vs sensor idle-HIGH injection).
+gpioa_crl = (periph_read(0x40010800, 4) & ~0xF) | 0x3; // PA0 = output PP
+periph_write(0x40010800, 4, gpioa_crl);
+periph_write(0x4001080C, 4, periph_read(0x4001080C, 4) & ~1); // ODR0=0
+gpio_set_input(0, 0, true);
+assert_eq(periph_read(0x40010808, 4) & 1, 0, 'GPIO PA0 push-pull ODR=0 + ext HIGH reads 0');
+
 // BSRR should only affect set bits — verify no stray change
 periph_write(0x40011010, 4, 0);
 assert_eq(periph_read(0x4001100C, 4) & 0x2000, 0, 'GPIO BSRR=0 no change');
@@ -107,29 +132,38 @@ gpioc_crh = (gpioc_crh & ~(0xF << 20)) | (0x3 << 20); // PC13 output PP 50MHz
 periph_write(0x40011004, 4, gpioc_crh);
 assert_eq(gpio_take_pin_events().length, 0, 'pin event: CRH->output same level silent');
 
-// BSRR set fires (2, 13, 1)
+// BSRR set fires (2, 13, 1, tcount)
 periph_write(0x40011010, 4, 1 << 13);
 let ev = gpio_take_pin_events();
-assert_eq(ev.length, 3, 'pin event: BSRR set emits one triple');
+assert_eq(ev.length, 4, 'pin event: BSRR set emits one quad');
 assert_eq(ev[0] === 2 && ev[1] === 13 && ev[2] === 1, true, 'pin event: BSRR set = (2,13,1)');
+assert_eq(Number.isInteger(ev[3]) && ev[3] >= 0, true, 'pin event: tcount stamp present');
 
 // Same-level BSRR set is silent (old==value guard in write_port)
 periph_write(0x40011010, 4, 1 << 13);
 assert_eq(gpio_take_pin_events().length, 0, 'pin event: same-value BSRR set silent');
 
-// BSRR reset fires (2, 13, 0)
+// BSRR reset fires (2, 13, 0, tcount)
 periph_write(0x40011010, 4, 1 << 29);
 ev = gpio_take_pin_events();
-assert_eq(ev.length === 3 && ev[2] === 0, true, 'pin event: BSRR reset = (2,13,0)');
+assert_eq(ev.length === 4 && ev[2] === 0, true, 'pin event: BSRR reset = (2,13,0)');
 
 // ODR same-value write is silent (iter_port_reg_changes skips unchanged pins)
 periph_write(0x4001100C, 4, 0);
 assert_eq(gpio_take_pin_events().length, 0, 'pin event: same-value ODR write silent');
 
-// ODR change write fires
+// ODR change write fires (+ tcount advances with executed instructions)
 periph_write(0x4001100C, 4, 1 << 13);
 ev = gpio_take_pin_events();
-assert_eq(ev.length === 3 && ev[2] === 1, true, 'pin event: ODR change = (2,13,1)');
+assert_eq(ev.length === 4 && ev[2] === 1, true, 'pin event: ODR change = (2,13,1)');
+const t0 = ev[3];
+step_batch(5000);
+periph_write(0x4001100C, 4, 0);
+ev = gpio_take_pin_events();
+assert_eq(ev.length === 4 && ev[2] === 0, true, 'pin event: ODR clear = (2,13,0)');
+assert_eq(ev[3] - t0 >= 5000, true, 'pin event: tcount tracks instruction count');
+periph_write(0x4001100C, 4, 1 << 13); // restore HIGH: the re-drive section below needs a live 1->0 edge
+gpio_take_pin_events();
 // gpio_set_input on a fresh pin registers an external driver (read_cb_mask):
 // the level then shows in IDR even with no prior callback (pins the
 // set_input_pin_raw mask regression that failed 3 tests mid-sprint).
@@ -148,7 +182,7 @@ assert_eq(gpio_take_pin_events().length, 0, 'pin event: ODR write while input si
 gpioc_crh = (gpioc_crh & ~(0xF << 20)) | (0x3 << 20); // back to output
 periph_write(0x40011004, 4, gpioc_crh);
 ev = gpio_take_pin_events();
-assert_eq(ev.length === 3 && ev[2] === 0, true, 'pin event: CRH re-drive fires (2,13,0)');
+assert_eq(ev.length === 4 && ev[2] === 0, true, 'pin event: CRH re-drive fires (2,13,0)');
 
 // AF pins (cnf=0b10) emit nothing: PA7 AF push-pull, toggle ODR bit 7
 let gpioa_crl2 = periph_read(0x40010800, 4);
@@ -723,16 +757,23 @@ step_batch(1000);
 const c0 = periph_read(DWT + 0x04, 4);
 step_batch(1000);
 assert_eq(((periph_read(DWT + 0x04, 4) - c0) >>> 0), 1000, 'DWT CYCCNT 1:1 default');
-// FLASH LATENCY=2 -> each instruction retires 3 cycles (pacing untouched)
+// CYCCNT tracks retired instructions 1:1 regardless of FLASH wait
+// states: the engine paces one instruction per core-clock cycle
+// everywhere else (SysTick RVR, TIM, runner budgets), so inflating the
+// counter breaks DWT-paced delays (STM32duino delayMicroseconds spins
+// on CYCCNT — at 72MHz/WS2 it ran 3x fast, collapsing the DHT22 >=1ms
+// wake pulse and 55us pull-up wait below the sensor's reaction time).
+// ACR LATENCY still programs and reads back; it no longer bends CYCCNT.
+// FLASH LATENCY=2 -> CYCCNT still 1:1 (ACR programs, counter unaffected)
 periph_write(FLASHB + 0x00, 4, 2);
 const c1 = periph_read(DWT + 0x04, 4);
 step_batch(1000);
-assert_eq(((periph_read(DWT + 0x04, 4) - c1) >>> 0), 3000, 'DWT CYCCNT 3x with LATENCY=2');
+assert_eq(((periph_read(DWT + 0x04, 4) - c1) >>> 0), 1000, 'DWT CYCCNT 1:1 with LATENCY=2');
 // Guest write takes effect immediately, then keeps counting
 periph_write(DWT + 0x04, 4, 0x1000);
 assert_eq(periph_read(DWT + 0x04, 4), 0x1000, 'DWT CYCCNT guest write');
 step_batch(100);
-assert_eq(periph_read(DWT + 0x04, 4), 0x1000 + 300, 'DWT CYCCNT resumes at 3x');
+assert_eq(periph_read(DWT + 0x04, 4), 0x1000 + 100, 'DWT CYCCNT resumes 1:1');
 // LATENCY back to 0 -> 1:1 again
 periph_write(FLASHB + 0x00, 4, 0);
 const c2 = periph_read(DWT + 0x04, 4);
@@ -2035,8 +2076,10 @@ group('GPIO electrical');
 reset();
 const GPIOA = 0x40010800;
 
-// PA0 input pull-up: CNF=01 (pull), MODE=00, ODR bit0 = 1
-periph_write(GPIOA + 0x00, 4, (0b01 << 2) | 0); // CRL[3:0] = 0b01xx? -> CNF=01, MODE=00
+// PA0 input pull-up (RM0008 Table 20: MODE=00, CNF=10 -> nibble 0x8),
+// ODR bit0 = 1 selects the pull-up. Undriven pin reads the pull.
+// (The SoftwareSerial RX shape: INPUT_PULLUP + wire driver.)
+periph_write(GPIOA + 0x00, 4, 0x8);             // CRL[3:0] = 0x8 -> CNF=10, MODE=00
 periph_write(GPIOA + 0x0C, 4, 0x0001);          // ODR bit0 = 1 (pull-up)
 assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 1, 'GPIO PA0 pull-up reads 1');
 
@@ -2044,8 +2087,15 @@ assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 1, 'GPIO PA0 pull-up reads 1');
 periph_write(GPIOA + 0x0C, 4, 0x0000);
 assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 0, 'GPIO PA0 pull-down reads 0');
 
-// PA0 input floating, no external driver -> 0
-periph_write(GPIOA + 0x00, 4, 0b0100);          // CNF=00 (floating), MODE=00
+// PA0 pull-up tracks a wired external driver both ways (loopback shape)
+gpio_set_input(0, 0, false);                    // wire pulls low against the pull-up
+assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 0, 'GPIO PA0 pull-up + wire low reads 0');
+gpio_set_input(0, 0, true);                     // wire releases/drives high
+assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 1, 'GPIO PA0 pull-up + wire high reads 1');
+
+// PA0 input floating (nibble 0x4: MODE=00, CNF=01), no external driver -> 0
+reset();
+periph_write(GPIOA + 0x00, 4, 0x4);             // CNF=01 (floating), MODE=00
 assert_eq(periph_read(GPIOA + 0x08, 4) & 1, 0, 'GPIO PA0 floating reads 0');
 
 // PA1 push-pull output: CNF=00, MODE=10 (2MHz); ODR drives IDR
@@ -2063,10 +2113,13 @@ assert_eq(periph_read(GPIOA + 0x08, 4) >> 2 & 1, 1, 'GPIO PA2 open-drain release
 periph_write(GPIOA + 0x0C, 4, 0x0000);          // drive low
 assert_eq(periph_read(GPIOA + 0x08, 4) >> 2 & 1, 0, 'GPIO PA2 open-drain driven low reads 0');
 
-// External driver wins over push-pull output
+// Push-pull output IDR reads the driven level even against a stale host
+// injection (silicon: the strong ODR driver wins; e.g. a sensor idle-HIGH
+// injection must not mask the firmware's own wake-LOW on a shared wire).
+// The JS facade gpioReadOutput() still honors the external driver.
 periph_write(GPIOA + 0x0C, 4, 0x0002);          // PA1 push-pull high
-gpio_set_input(0, 1, false);                    // external driver pulls low
-assert_eq(periph_read(GPIOA + 0x08, 4) >> 1 & 1, 0, 'GPIO external driver beats push-pull');
+gpio_set_input(0, 1, false);                    // stale external low (host has not caught up)
+assert_eq(periph_read(GPIOA + 0x08, 4) >> 1 & 1, 1, 'GPIO push-pull IDR reads driven level over stale injection');
 assert_eq(gpio_read_output(0, 1), false, 'gpio_read_output honors external driver');
 
 // Slew: transitions take N instructions; IDR shows the old level meanwhile

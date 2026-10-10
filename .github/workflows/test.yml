@@ -221,6 +221,10 @@ jobs:
         run: node tests/test_i2c_single_byte.mjs
       - name: I2C JS-only slave (pointer write + repeated START + read-N)
         run: node tests/test_i2c_js_slave.mjs
+      - name: DHT22 one-wire timing (bit-bang read vs scripted sensor)
+        run: node tests/test_dht_onewire.mjs
+      - name: I2C multi-byte master-TX (RTC-SET 8-byte write capture)
+        run: node tests/test_i2c_master_tx.mjs
       - name: DMA request register bits (DAC/TIM/SPI/USART)
         run: node tests/test_dma_requests.mjs
       - name: DMA signal generation + TIM slave mode + I2C clock stretching

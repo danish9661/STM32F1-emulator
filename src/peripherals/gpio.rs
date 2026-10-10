@@ -13,11 +13,16 @@ pub fn set_gpio_slew(inst: u32) {
     GPIO_SLEW.store(inst, Ordering::Relaxed);
 }
 
-/// Pin-change event buffer: flat [port, pin, level] triples, recorded whenever
-/// the chip drives an output pin to a NEW level (ODR/BSRR/BRR writes and
-/// CRL/CRH mode-change re-drives). Drained by JS via gpio_take_pin_events();
-/// cleared by the next init()/init_svd(). Bounded: on overflow the buffer is
-/// dropped wholesale (page drains per batch, so this never happens in practice).
+/// Pin-change event buffer: flat [port, pin, level, tcount] quads, recorded
+/// whenever the chip drives an output pin to a NEW level (ODR/BSRR/BRR writes
+/// and CRL/CRH mode-change re-drives). tcount is INSTRUCTION_COUNT (u32
+/// wrap) at the transition — sub-batch edge timing for host observers
+/// (e.g. software-serial start-bit phase; batch drains quantize edges to
+/// ~20K instr ≈ 2.7 bit times at 9600 baud, unrecoverable without stamps).
+/// Drained by JS via gpio_take_pin_events(); cleared by the next
+/// init()/init_svd(). Bounded: on overflow the buffer is dropped wholesale
+/// (page drains per batch, so this never happens in practice). Zero hot-path
+/// cost: recorded per transition, never per access (fetches bypass).
 const MAX_PIN_EVENTS: usize = 1024;
 static GPIO_PIN_EVENTS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -25,7 +30,8 @@ pub fn clear_pin_events() {
     GPIO_PIN_EVENTS.lock().unwrap().clear();
 }
 
-/// Drain buffered pin-change events as a flat [port, pin, level, ...] array.
+/// Drain buffered pin-change events as a flat [port, pin, level, tcount, ...]
+/// array.
 pub fn take_pin_events() -> Vec<u32> {
     let mut ev = GPIO_PIN_EVENTS.lock().unwrap();
     std::mem::take(&mut *ev)
@@ -33,12 +39,13 @@ pub fn take_pin_events() -> Vec<u32> {
 
 fn record_pin_event(port: u8, pin: u8, level: bool) {
     let mut ev = GPIO_PIN_EVENTS.lock().unwrap();
-    if ev.len() + 3 > MAX_PIN_EVENTS {
+    if ev.len() + 4 > MAX_PIN_EVENTS {
         ev.clear();
     }
     ev.push(port as u32);
     ev.push(pin as u32);
     ev.push(level as u32);
+    ev.push(crate::system::instruction_count() as u32);
 }
 
 #[derive(Clone, Copy)]
@@ -427,19 +434,28 @@ impl Gpio {
             return gpio.read_pin_option(sys, self.port, pin).unwrap_or(false);
         }
         if cnf == 0 && mode != 0 {
-            // push-pull output: ODR drives both levels.
-            if gpio.read_cb_mask[self.port as usize] & (1 << pin) == 0
-                && gpio.pending_transitions[self.port as usize].is_empty()
-            {
-                return (odr >> pin) & 1 != 0;
-            }
-            return gpio.read_output_pin(sys, self.port, pin);
+            // Push-pull output: the strong ODR driver wins over any
+            // injected external level (silicon behavior). A stale host
+            // injection (e.g. a sensor's idle-HIGH while the firmware
+            // drives its wake-LOW) must never flip firmware readback of
+            // its own driven pin. Pending slew transitions still gate
+            // the visible edge via the driven state.
+            return gpio.driven_pin_level(self.port, pin);
         }
         let odr_bit = (odr >> pin) & 1 != 0;
         if mode == 0 {
             match cnf {
-                1 => gpio.read_pin_option(sys, self.port, pin).unwrap_or(odr_bit), // pull-up if ODR=1
-                _ => false, // reserved or analog
+                // 01: floating input — external driver, else 0.
+                1 => gpio.read_pin_option(sys, self.port, pin).unwrap_or(false),
+                // 10: input with pull-up / pull-down (e.g. Arduino
+                // INPUT_PULLUP) — external driver wins, else the
+                // ODR-selected pull. Without this a pulled-up pin
+                // reads 0 forever, breaking bit-banged single-wire
+                // reads (DHT22 DATA stuck LOW -> firmware sees no
+                // ACK/data edges -> nan).
+                2 => gpio.read_pin_option(sys, self.port, pin).unwrap_or(odr_bit),
+                // 00 analog / 11 reserved: always 0.
+                _ => false,
             }
         } else {
             // open-drain: 0 drives low; 1 releases the line

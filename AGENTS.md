@@ -708,6 +708,33 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   canary 39/39, cli + emulator.js 200M 39/39, census + fuzz green,
   coremark/chips/otg/dfu/all event+demo suites green, browser 34 + 8.
 
+### 47. Interpreter/memory speed sprint (this session; uncommitted review below)
+- **Wide-access fast paths** (`src/cpu/mem.rs`): `read16/32`, `read16_raw`,
+  `write16/32` re-ran the full gate set per byte; now one region resolve
+  per access with exact per-byte slow fallbacks (MPU/watch armed,
+  straddling/unmapped tails, `bad`-address parity preserved).
+- **Devirtualized interpreter** (`src/cpu/mod.rs`, `src/cpu/thumb.rs`):
+  `run`/`exec16`/`exec32`/exception paths take concrete `FlatMemory`
+  (sole implementor) instead of `&mut dyn Memory`.
+- **Micro-cuts**: `is_periph` one-compare reject below `0x40000000`,
+  `get_unchecked` after proven containment.
+- **Reverted, not shipped**: single-entry data-read cache (gen counter +
+  denylist + ~40 invalidation sites) — same-process interleaved A/B
+  (both binaries, alternating windows) measured it exactly neutral
+  (0.96–1.02); N=1 polls never hit and fatter accessors regressed
+  byte-heavy code up to 2x. Lessons in CHANGELOG; needs A/B proof to retry.
+- **Measured**: all 40 `site/*.elf` ≥50 MIPS headless-facade (min 50 dfu,
+  bulk 60-90, fsmc 107); six fresh arduino-cli sketches 54-82 headless and
+  **62-108 in real Chromium** (worst spixfer 62). Browser speed test green
+  (76/102 MIPS, no console errors).
+- **Verified**: test_all 797/797, canary 39/39, coremark 5/5,
+  emulator.js 3/3, cpu 50/50, `pkg/`↔`site/` mirrors synced.
+- Box-load discipline learned the hard way: single-shot MIPS on a shared
+  box swings ±40% (esbuild + headless-Chrome co-tenants here); only
+  back-to-back A/B ratios and `.filter`-free medians are trustworthy —
+  verify with `node /tmp/opencode/ab2.mjs`-style interleaving, never
+  sequential before/after runs.
+
 
 
 ## Next Phase — Long-term Optimizations

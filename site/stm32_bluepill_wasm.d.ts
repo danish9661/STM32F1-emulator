@@ -314,6 +314,15 @@ export function init(): void;
 export function init_svd(svd_xml: string): void;
 
 /**
+ * Raw engine instruction counter (same domain as pin-event tcounts).
+ * The facade-level instCount does NOT credit IRQ-handler instructions,
+ * so the two counters diverge under interrupt load — host observers must
+ * measure edge ages in THIS domain (now - tcount), never by mixing with
+ * facade counts. Returns full u64 (JS BigInt; safely < 2^53 in practice).
+ */
+export function instruction_count_now(): bigint;
+
+/**
  * Next pending IRQ within the batch budget (like get_next_pending_interrupt,
  * but capped at 64 per step/step_batch so one hot IRQ can't starve others).
  */
@@ -767,6 +776,7 @@ export interface InitOutput {
     readonly i2c_oled_writes: (a: number, b: number, c: number) => bigint;
     readonly init: () => void;
     readonly init_svd: (a: number, b: number) => void;
+    readonly instruction_count_now: () => bigint;
     readonly intr_next: () => number;
     readonly is_watchdog_reset_requested: () => number;
     readonly lcd_fb: (a: number, b: number) => [number, number];

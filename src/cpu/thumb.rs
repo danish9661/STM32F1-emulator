@@ -16,7 +16,7 @@
 //! RSC/SRS, ...) records a [`CpuFault`](super::CpuFault) and stops, so gaps
 //! are loud and precisely located instead of silently wrong.
 
-use super::{mem::Memory, Cpu};
+use super::{mem::{FlatMemory, Memory}, Cpu};
 use crate::system::WasmSystem;
 
 pub(crate) fn len(op: u16) -> usize {
@@ -66,7 +66,7 @@ fn fault(c: &mut Cpu, pc: u32, op1: u16, op2: u16, l: u8) -> bool {
 fn branch(
     c: &mut Cpu,
     sys: &WasmSystem,
-    mem: &mut dyn Memory,
+    mem: &mut FlatMemory,
     t: u32,
     pc: u32,
     op1: u16,
@@ -263,7 +263,7 @@ fn shift_op(v: u32, typ: u32, amt: u32, ci: u32) -> (u32, u32) {
     }
 }
 
-pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc: u32) -> bool {
+pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, op: u16, pc: u32) -> bool {
     let o = op as u32;
     // 16-bit data-processing (except CMP/CMN/TST) must not update APSR inside
     // an IT block (verified against silicon behavior via the availableForWrite
@@ -987,7 +987,7 @@ fn alu_op(
 pub fn exec32(
     cpu: &mut Cpu,
     sys: &WasmSystem,
-    mem: &mut dyn Memory,
+    mem: &mut FlatMemory,
     op1: u16,
     op2: u16,
     pc: u32,

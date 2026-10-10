@@ -14,7 +14,7 @@ export class GPIOPin {
   constructor(mcu: STM32F1, port: string, pin: number);
 
   /** Subscribe to chip-driven output level changes. Returns unsubscribe fn. */
-  on(event: 'change', cb: (high: boolean) => void): () => void;
+  on(event: 'change', cb: (high: boolean, tcount?: number) => void): () => void;
   /** Driven output level (0 or 1). */
   read(): 0 | 1;
   /** Input level (from external driver or pull). */

@@ -23,7 +23,7 @@ mod census;
 mod diffuzz;
 
 pub use regs::Regs;
-pub use mem::Memory;
+pub use mem::{FlatMemory, Memory};
 use crate::system::WasmSystem;
 
 /// EXC_RETURN values we support (thread mode). F1 (return to handler) is
@@ -191,7 +191,7 @@ impl Cpu {
     /// priority exception preempting a running handler stacks on MSP and
     /// returns with EXC_RETURN_HANDLER), including FreeRTOS SVC/PendSV/
     /// SysTick handlers.
-    pub fn take_exception(&mut self, sys: &WasmSystem, mem: &mut dyn Memory, irq: i32) {
+    pub fn take_exception(&mut self, sys: &WasmSystem, mem: &mut FlatMemory, irq: i32) {
         let vector = (16 + irq) as u32;
         // Exception entry wakes the core (WFI sleeps until an interrupt is
         // delivered; without this a sleeping core never resumes, since the
@@ -291,7 +291,7 @@ impl Cpu {
     pub fn exception_return(
         &mut self,
         sys: &WasmSystem,
-        mem: &mut dyn Memory,
+        mem: &mut FlatMemory,
         exc: u32,
         pc: u32,
     ) -> bool {
@@ -399,7 +399,7 @@ impl Cpu {
     /// fetch skeleton stays small for the JIT (see MPU_ON docs).
     #[cold]
     #[inline(never)]
-    fn mpu_exec_denied(&mut self, sys: &WasmSystem, mem: &mut dyn Memory, pc: u32) -> bool {
+    fn mpu_exec_denied(&mut self, sys: &WasmSystem, mem: &mut FlatMemory, pc: u32) -> bool {
         if sys.mpu_check_exec_slow(pc) {
             return false;
         }
@@ -409,7 +409,7 @@ impl Cpu {
         true
     }
 
-    pub fn run(&mut self, sys: &WasmSystem, mem: &mut dyn Memory, budget: u32) -> u32 {
+    pub fn run(&mut self, sys: &WasmSystem, mem: &mut FlatMemory, budget: u32) -> u32 {
         let mut done = 0;
         while done < budget {
             if self.fault.is_some() {

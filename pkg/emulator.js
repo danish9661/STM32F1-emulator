@@ -236,7 +236,7 @@ export async function createEmulator(opts = {}) {
     gpio_set_input, gpio_read_input,
     can_inject_message, adc_set_sim_value, gpio_set_analog, adc_set_rc_tau,
     touchscreen_set_touch, pwm_duty, tim_chan_pin, raise_fault,
-     i2c_oled_fb, lcd_fb, gpio_take_pin_events,     drain_events, spi_inject_miso, i2c_inject_rx, i2c_clear_rx, i2c_inject_start, i2c_inject_write, i2c_inject_read, i2c_inject_stop, i2c_inject_alert,     bootloader_enable, bootloader_go_addr, pwr_mode, pwr_estimate, pwr_set_supply_mv, adc_set_internal, rcc_sysclk_hz, rcc_clocks_hz, rcc_mco_hz, rcc_fail_hse, gpio_set_slew, i2c_oled_writes, usb_bus_reset, usb_detach, usb_inject_setup, usb_inject_out, otg_inject_setup, otg_inject_out, otg_bus_reset, otg_detach, otg_host_feed_in, otg_host_attach,
+     i2c_oled_fb, lcd_fb, gpio_take_pin_events, instruction_count_now,     drain_events, spi_inject_miso, i2c_inject_rx, i2c_clear_rx, i2c_inject_start, i2c_inject_write, i2c_inject_read, i2c_inject_stop, i2c_inject_alert,     bootloader_enable, bootloader_go_addr, pwr_mode, pwr_estimate, pwr_set_supply_mv, adc_set_internal, rcc_sysclk_hz, rcc_clocks_hz, rcc_mco_hz, rcc_fail_hse, gpio_set_slew, i2c_oled_writes, usb_bus_reset, usb_detach, usb_inject_setup, usb_inject_out, otg_inject_setup, otg_inject_out, otg_bus_reset, otg_detach, otg_host_feed_in, otg_host_attach,
     board_info, board_boot0, board_boot0_get, board_nrst,
     rustcpu_init, rustcpu_load, rustcpu_run, rustcpu_fault, rustcpu_fault_clear, rustcpu_dispatch,
     rustcpu_regs, rustcpu_set_pc, rustcpu_set_reg, rustcpu_mem_read, rustcpu_mem_write, rustcpu_mem_write_raw, rustcpu_dma_pump, rustcpu_i2c_hook_fired,
@@ -404,17 +404,19 @@ export async function createEmulator(opts = {}) {
     const writeWatchers = [];
     const pinWatchers = [];
 
-    // Drain buffered GPIO pin-change events (flat [port, pin, level, ...]) into
-    // the pin watchers, once per batch before the write tap is fed (so a CS-low
-    // event is visible before that batch's DR writes). No JS callback ever runs
+    // Drain buffered GPIO pin-change events (flat [port, pin, level, tcount]
+    // quads) into the pin watchers, once per batch before the write tap is
+    // fed (so a CS-low event is visible before that batch's DR writes).
+    // Watchers get (port, pin, level, tcount); tcount is INSTRUCTION_COUNT
+    // at the edge for sub-batch phase observers. No JS callback ever runs
     // reentrantly inside Rust.
     const drainPinEvents = () => {
         if (!pinWatchers.length) return;
         const ev = gpio_take_pin_events();
-        for (let i = 0; i + 2 < ev.length; i += 3) {
-            const port = ev[i], pin = ev[i + 1], level = ev[i + 2];
+        for (let i = 0; i + 3 < ev.length; i += 4) {
+            const port = ev[i], pin = ev[i + 1], level = ev[i + 2], tcount = ev[i + 3];
             for (let wi = 0; wi < pinWatchers.length; wi++) {
-                try { pinWatchers[wi](port, pin, level); } catch (e) {}
+                try { pinWatchers[wi](port, pin, level, tcount); } catch (e) {}
             }
         }
     };
@@ -837,7 +839,8 @@ export async function createEmulator(opts = {}) {
             };
         },
 
-        /** Watch chip-driven GPIO level changes: fn(port, pin, level) (port 0=GPIOA, level 0/1).
+        /** Watch chip-driven GPIO level changes: fn(port, pin, level, tcount) (port 0=GPIOA, level 0/1).
+         *  tcount is INSTRUCTION_COUNT at the edge (sub-batch phase for observers).
          *  Fires when the chip drives an output pin to a NEW level (ODR/BSRR/BRR writes, or
          *  CRL/CRH writes re-driving ODR). Does NOT fire for gpioSetInput (JS→chip direction).
          *  Drained automatically each batch (and before write watchers at each hook). Returns unsubscribe. */
@@ -849,8 +852,11 @@ export async function createEmulator(opts = {}) {
             };
         },
 
-        /** Drain buffered pin-change events directly (flat [port, pin, level, ...]). */
+        /** Drain buffered pin-change events directly (flat [port, pin, level, tcount, ...] quads). */
         takePinEvents() { return gpio_take_pin_events(); },
+
+        /** Raw engine instruction counter (same domain as pin-event tcounts; the facade instCount skips IRQ handlers). */
+        instructionCountNow() { return instruction_count_now(); },
 
         /** Drain virtual-peripheral transaction events as a flat i32 array (see drain_events export). */
         drainEvents() { return drain_events(); },

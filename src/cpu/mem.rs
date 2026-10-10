@@ -27,7 +27,14 @@ pub struct MemRegion {
 }
 
 pub(crate) fn is_periph(addr: u32) -> bool {
-    (addr >= 0x40000000 && addr < 0x51000000)
+    // Fast reject: everything below 0x40000000 (flash, RAM, and below) is
+    // never a peripheral — one compare instead of up-to-eight for the
+    // entire hot path (fetch + RAM traffic). Peripheral windows pay one
+    // extra compare; they are ~0.001 accesses/instruction.
+    if addr < 0x40000000 {
+        return false;
+    }
+    (addr < 0x51000000)
         || (addr >= 0x60000000 && addr < 0x62000000)
         || (addr >= 0xA0000000 && addr < 0xA2000000)
         || (addr >= 0xE0000000 && addr < 0xE1000000)
@@ -123,6 +130,40 @@ impl FlatMemory {
             }
         }
     }
+
+    /// Exact per-byte fallbacks for the wide fast paths below: MPU/watch
+    /// armed, region-straddling or unmapped tails. Outlined cold so the
+    /// hot skeletons stay JIT-inlinable.
+    #[cold]
+    #[inline(never)]
+    fn read16_slow(&self, addr: u32) -> u16 {
+        let lo = self.read8(addr) as u16;
+        let hi = self.read8(addr + 1) as u16;
+        lo | (hi << 8)
+    }
+    #[cold]
+    #[inline(never)]
+    fn read32_slow(&self, addr: u32) -> u32 {
+        let b0 = self.read8(addr) as u32;
+        let b1 = self.read8(addr + 1) as u32;
+        let b2 = self.read8(addr + 2) as u32;
+        let b3 = self.read8(addr + 3) as u32;
+        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+    }
+    #[cold]
+    #[inline(never)]
+    fn write16_slow(&mut self, addr: u32, v: u16) {
+        self.write8(addr, (v & 0xFF) as u8);
+        self.write8(addr + 1, (v >> 8) as u8);
+    }
+    #[cold]
+    #[inline(never)]
+    fn write32_slow(&mut self, addr: u32, v: u32) {
+        self.write8(addr, (v & 0xFF) as u8);
+        self.write8(addr + 1, ((v >> 8) & 0xFF) as u8);
+        self.write8(addr + 2, ((v >> 16) & 0xFF) as u8);
+        self.write8(addr + 3, ((v >> 24) & 0xFF) as u8);
+    }
 }
 
 impl Memory for FlatMemory {
@@ -160,15 +201,62 @@ impl Memory for FlatMemory {
         if is_periph(addr) {
             return crate::sys().p.read(crate::sys(), addr, 2) as u16;
         }
-        let lo = self.read8(addr) as u16;
-        let hi = self.read8(addr + 1) as u16;
-        lo | (hi << 8)
+        // Gates armed (MPU enforcement / GDB watchpoints): exact per-byte
+        // path — permissions can differ across subregions. Otherwise one
+        // region resolve serves the whole halfword (the old body re-ran
+        // all gates per byte: 2x MPU + 2x periph + 2x watchpoint checks).
+        if crate::system::mpu_gate_on() || crate::system::watch_on() {
+            core::hint::cold_path();
+            return self.read16_slow(addr);
+        }
+        if self.in_flash(addr) {
+            let o = (addr - self.flash_base) as usize;
+            if o + 1 < self.flash.len() {
+                return (unsafe { *self.flash.get_unchecked(o) as u16 }) | ((unsafe { *self.flash.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return self.read16_slow(addr);
+        } else if self.in_ram(addr) {
+            let o = (addr - self.ram_base) as usize;
+            if o + 1 < self.ram.len() {
+                return (unsafe { *self.ram.get_unchecked(o) as u16 }) | ((unsafe { *self.ram.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return self.read16_slow(addr);
+        } else if let Some(idx) = self.extra_idx(addr) {
+            let r = &self.extra[idx];
+            let o = (addr - r.base) as usize;
+            if o + 1 < r.data.len() {
+                return (unsafe { *r.data.get_unchecked(o) as u16 }) | ((unsafe { *r.data.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return self.read16_slow(addr);
+        }
+        // Unmapped: legacy lands bad on the LAST byte touched (addr+1).
+        self.bad.set(Some(addr.wrapping_add(1)));
+        0
     }
     fn read16_raw(&self, addr: u32) -> u16 {
         // Raw fetch decoration (MPU fault records); periph window still
         // routes to the model (a fetch there is diagnosed, not executed).
+        // Single region resolve: fetches run every instruction, and the old
+        // body paid 3x is_periph + 2x raw byte paths per halfword.
         if is_periph(addr) {
             return crate::sys().p.read(crate::sys(), addr, 2) as u16;
+        }
+        if self.in_flash(addr) {
+            let o = (addr - self.flash_base) as usize;
+            if o + 1 < self.flash.len() {
+                return (unsafe { *self.flash.get_unchecked(o) as u16 }) | ((unsafe { *self.flash.get_unchecked(o + 1) as u16 }) << 8);
+            }
+        } else if self.in_ram(addr) {
+            let o = (addr - self.ram_base) as usize;
+            if o + 1 < self.ram.len() {
+                return (unsafe { *self.ram.get_unchecked(o) as u16 }) | ((unsafe { *self.ram.get_unchecked(o + 1) as u16 }) << 8);
+            }
+        } else if let Some(idx) = self.extra_idx(addr) {
+            let r = &self.extra[idx];
+            let o = (addr - r.base) as usize;
+            if o + 1 < r.data.len() {
+                return (unsafe { *r.data.get_unchecked(o) as u16 }) | ((unsafe { *r.data.get_unchecked(o + 1) as u16 }) << 8);
+            }
         }
         let lo = self.read8_raw(addr) as u16;
         let hi = self.read8_raw(addr + 1) as u16;
@@ -178,11 +266,43 @@ impl Memory for FlatMemory {
         if is_periph(addr) {
             return crate::sys().p.read(crate::sys(), addr, 4);
         }
-        let b0 = self.read8(addr) as u32;
-        let b1 = self.read8(addr + 1) as u32;
-        let b2 = self.read8(addr + 2) as u32;
-        let b3 = self.read8(addr + 3) as u32;
-        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        // One region resolve per word (old body: 4x gated byte reads).
+        if crate::system::mpu_gate_on() || crate::system::watch_on() {
+            core::hint::cold_path();
+            return self.read32_slow(addr);
+        }
+        if self.in_flash(addr) {
+            let o = (addr - self.flash_base) as usize;
+            if o + 3 < self.flash.len() {
+                return (unsafe { *self.flash.get_unchecked(o) as u32 })
+                    | ((unsafe { *self.flash.get_unchecked(o + 1) as u32 }) << 8)
+                    | ((unsafe { *self.flash.get_unchecked(o + 2) as u32 }) << 16)
+                    | ((unsafe { *self.flash.get_unchecked(o + 3) as u32 }) << 24);
+            }
+            return self.read32_slow(addr);
+        } else if self.in_ram(addr) {
+            let o = (addr - self.ram_base) as usize;
+            if o + 3 < self.ram.len() {
+                return (unsafe { *self.ram.get_unchecked(o) as u32 })
+                    | ((unsafe { *self.ram.get_unchecked(o + 1) as u32 }) << 8)
+                    | ((unsafe { *self.ram.get_unchecked(o + 2) as u32 }) << 16)
+                    | ((unsafe { *self.ram.get_unchecked(o + 3) as u32 }) << 24);
+            }
+            return self.read32_slow(addr);
+        } else if let Some(idx) = self.extra_idx(addr) {
+            let r = &self.extra[idx];
+            let o = (addr - r.base) as usize;
+            if o + 3 < r.data.len() {
+                return (unsafe { *r.data.get_unchecked(o) as u32 })
+                    | ((unsafe { *r.data.get_unchecked(o + 1) as u32 }) << 8)
+                    | ((unsafe { *r.data.get_unchecked(o + 2) as u32 }) << 16)
+                    | ((unsafe { *r.data.get_unchecked(o + 3) as u32 }) << 24);
+            }
+            return self.read32_slow(addr);
+        }
+        // Unmapped: legacy lands bad on the LAST byte touched (addr+3).
+        self.bad.set(Some(addr.wrapping_add(3)));
+        0
     }
     fn write8(&mut self, addr: u32, v: u8) {
         // MPU data-write gate (denials drop the store).
@@ -217,18 +337,84 @@ impl Memory for FlatMemory {
             crate::sys().p.write(crate::sys(), addr, 2, v as u32);
             return;
         }
-        self.write8(addr, (v & 0xFF) as u8);
-        self.write8(addr + 1, (v >> 8) as u8);
+        // One region resolve per halfword (old body: 2x gated byte stores).
+        if crate::system::mpu_gate_on() || crate::system::watch_on() {
+            core::hint::cold_path();
+            return self.write16_slow(addr, v);
+        }
+        if self.in_ram(addr) {
+            let o = (addr - self.ram_base) as usize;
+            if o + 1 < self.ram.len() {
+                unsafe { *self.ram.get_unchecked_mut(o) = (v & 0xFF) as u8; }
+                unsafe { *self.ram.get_unchecked_mut(o + 1) = (v >> 8) as u8; }
+                return;
+            }
+            return self.write16_slow(addr, v);
+        } else if self.in_flash(addr) {
+            // Flash protection: guest stores are ignored (see struct docs).
+            // Contained or not, nothing lands — but an unmapped TAIL byte
+            // must still record bad like the legacy path, so only take the
+            // fast lane when the whole halfword is in flash.
+            let o = (addr - self.flash_base) as usize;
+            if o + 1 < self.flash.len() {
+                return;
+            }
+            return self.write16_slow(addr, v);
+        } else if let Some(idx) = self.extra_idx(addr) {
+            let r = &mut self.extra[idx];
+            let o = (addr - r.base) as usize;
+            if o + 1 < r.data.len() {
+                unsafe { *r.data.get_unchecked_mut(o) = (v & 0xFF) as u8; }
+                unsafe { *r.data.get_unchecked_mut(o + 1) = (v >> 8) as u8; }
+                return;
+            }
+            return self.write16_slow(addr, v);
+        }
+        // Unmapped: legacy lands bad on the LAST byte touched (addr+1).
+        self.bad.set(Some(addr.wrapping_add(1)));
     }
     fn write32(&mut self, addr: u32, v: u32) {
         if is_periph(addr) {
             crate::sys().p.write(crate::sys(), addr, 4, v);
             return;
         }
-        self.write8(addr, (v & 0xFF) as u8);
-        self.write8(addr + 1, ((v >> 8) & 0xFF) as u8);
-        self.write8(addr + 2, ((v >> 16) & 0xFF) as u8);
-        self.write8(addr + 3, ((v >> 24) & 0xFF) as u8);
+        // One region resolve per word (old body: 4x gated byte stores).
+        if crate::system::mpu_gate_on() || crate::system::watch_on() {
+            core::hint::cold_path();
+            return self.write32_slow(addr, v);
+        }
+        if self.in_ram(addr) {
+            let o = (addr - self.ram_base) as usize;
+            if o + 3 < self.ram.len() {
+                unsafe { *self.ram.get_unchecked_mut(o) = (v & 0xFF) as u8; }
+                unsafe { *self.ram.get_unchecked_mut(o + 1) = ((v >> 8) & 0xFF) as u8; }
+                unsafe { *self.ram.get_unchecked_mut(o + 2) = ((v >> 16) & 0xFF) as u8; }
+                unsafe { *self.ram.get_unchecked_mut(o + 3) = ((v >> 24) & 0xFF) as u8; }
+                return;
+            }
+            return self.write32_slow(addr, v);
+        } else if self.in_flash(addr) {
+            // Flash protection: guest stores are ignored. Fast lane only
+            // when the whole word is in flash (see write16 note).
+            let o = (addr - self.flash_base) as usize;
+            if o + 3 < self.flash.len() {
+                return;
+            }
+            return self.write32_slow(addr, v);
+        } else if let Some(idx) = self.extra_idx(addr) {
+            let r = &mut self.extra[idx];
+            let o = (addr - r.base) as usize;
+            if o + 3 < r.data.len() {
+                unsafe { *r.data.get_unchecked_mut(o) = (v & 0xFF) as u8; }
+                unsafe { *r.data.get_unchecked_mut(o + 1) = ((v >> 8) & 0xFF) as u8; }
+                unsafe { *r.data.get_unchecked_mut(o + 2) = ((v >> 16) & 0xFF) as u8; }
+                unsafe { *r.data.get_unchecked_mut(o + 3) = ((v >> 24) & 0xFF) as u8; }
+                return;
+            }
+            return self.write32_slow(addr, v);
+        }
+        // Unmapped: legacy lands bad on the LAST byte touched (addr+3).
+        self.bad.set(Some(addr.wrapping_add(3)));
     }
 }
 
@@ -238,13 +424,17 @@ impl FlatMemory {
     /// cold out-of-line fns below.
     #[inline(always)]
     fn read8_raw_unchecked(&self, addr: u32) -> u8 {
+        // Containment is proven by in_flash/in_ram/extra_idx before each
+        // index, so unchecked loads are sound — and they keep the JIT from
+        // re-emitting a bounds check per byte (the #1 cost in the fetch
+        // path after devirtualization).
         if self.in_flash(addr) {
-            self.flash[(addr - self.flash_base) as usize]
+            unsafe { *self.flash.get_unchecked((addr - self.flash_base) as usize) }
         } else if self.in_ram(addr) {
-            self.ram[(addr - self.ram_base) as usize]
+            unsafe { *self.ram.get_unchecked((addr - self.ram_base) as usize) }
         } else if let Some(idx) = self.extra_idx(addr) {
             let r = &self.extra[idx];
-            r.data[(addr - r.base) as usize]
+            unsafe { *r.data.get_unchecked((addr - r.base) as usize) }
         } else {
             self.bad.set(Some(addr));
             0
@@ -256,10 +446,10 @@ impl FlatMemory {
         if self.in_flash(addr) {
             // flash protection: guest stores are ignored (see struct docs)
         } else if self.in_ram(addr) {
-            self.ram[(addr - self.ram_base) as usize] = v;
+            unsafe { *self.ram.get_unchecked_mut((addr - self.ram_base) as usize) = v; }
         } else if let Some(idx) = self.extra_idx(addr) {
             let r = &mut self.extra[idx];
-            r.data[(addr - r.base) as usize] = v;
+            unsafe { *r.data.get_unchecked_mut((addr - r.base) as usize) = v; }
         } else {
             self.bad.set(Some(addr));
         }

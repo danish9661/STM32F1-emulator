@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] — ADC/TIM observation hardening (hook-contract work)
 
+### Added
+- Pin-change events carry an instruction-count stamp: `gpio_take_pin_events()`
+  now drains `[port, pin, level, tcount]` quads (`tcount` = INSTRUCTION_COUNT
+  at the edge, u32 wrap) instead of triples. `emulator.js onPinChange`
+  forwards it as a 4th watcher arg and `GPIOPin.on('change', cb)` as a 2nd
+  (`tcount?`), both backward compatible. Motivation: batch drains quantize
+  edges to ~20K instr (≈2.7 bit times at 9600 baud), so software-serial
+  start-bit phase is unrecoverable from batch timing alone; stamps give host
+  observers exact edge phase at zero hot-path cost (recorded per transition,
+  never per access).
+- `instruction_count_now()` wasm export (`src/lib.rs`, surfaced as
+  `emulator.js instructionCountNow()` + `.d.ts`): raw engine
+  INSTRUCTION_COUNT for same-domain edge-age measurement
+  (`now - tcount`). The facade `instCount` skips IRQ-handler instructions,
+  so mixing it with pin-event stamps drifts under interrupt load.
+
+### Performance
+- Single-check wide memory paths (`src/cpu/mem.rs`): `read16`/`read32`/
+  `read16_raw`/`write16`/`write32` did the full gate set per byte (4x MPU +
+  periph + watchpoint checks per word, 3x `is_periph` + 2x raw paths per
+  fetch). RAM/flash/extra hits now resolve the region once; MPU/watch-armed
+  and straddling/unmapped tails take the exact per-byte slow path. Measured:
+  showcase 50M 1.05s -> 0.66s (~48 -> ~72 MIPS), periph39 50M 0.71s -> 0.58s
+  (~70 -> ~86 MIPS), emulator.js 200M in 2.22s (~90 MIPS).
+- Concrete `FlatMemory` through the interpreter (`src/cpu/mod.rs`,
+  `src/cpu/thumb.rs`): `run`/`exec16`/`exec32`/exception paths took
+  `&mut dyn Memory` although `FlatMemory` is the sole implementor — every
+  guest access paid vtable dispatch on top of the gates. Static calls now
+  (callers already hold concrete memory); the trait stays as documentation.
+- Hot-path micro-cuts (`src/cpu/mem.rs`): `is_periph` rejects everything
+  below 0x40000000 with one compare (the whole fetch/RAM path); region-hit
+  loads/stores use `get_unchecked` (containment proven by the resolve, so
+  sound — removes a bounds check per byte).
+- Custom-firmware floor (the actual ask: arbitrary user sketches, not just
+  shipped ELFs): six arduino-cli sketches (compute loop, GPIO bit-bang,
+  UART spam, I2C scan timeouts, SPI transfers, ADC+delay) measured
+  headless-facade at 54-82 MIPS and **in real Chromium at 62-108 MIPS**
+  (spixfer worst at 62, UART-heavy included) — the browser JIT runs the
+  same wasm faster than Node here, with warmup. No firmware-specific hacks;
+  all gains are in the shared interpreter/memory layer.
+- Evaluated and REVERTED: single-entry data-read cache for polled registers
+  (generation counter + denylist + ~40 invalidation sites). Interleaved A/B
+  (both binaries in one process, alternating windows) measured it exactly
+  neutral (ratios 0.96-1.02 across 8 workloads): N=1 polls never hit, and
+  the added branches cost more than the rare multi-iteration hits save —
+  plus a 2x regression on byte-heavy formatting code from the fatter
+  accessors. The invalidation design (writes/ticks/pumps/injections/
+  exception entry/return/init) is documented here for the record; do not
+  re-add without same-process A/B proof.
+
 ### Fixed
 - `AdcDone` event for ADC3 reported `adc=13` (the DMA stream id: ADC3 ->
   DMA2 ch5); it now reports the ADC number (`adc=3`), matching the
@@ -46,6 +96,35 @@ All notable changes to this project will be documented in this file.
   reset / PE disable): a registered address keeps ACKing while dry, and only
   a never-served address NACKs. Like silicon -- a real slave does not
   un-address itself over an empty TX buffer (`src/peripherals/i2c.rs`).
+- GPIO IDR input-mode CNF decode was swapped vs RM0008 Table 20: CNF=01
+  (floating) was treated as pull-up/down and CNF=10 (pull-up/down, e.g.
+  Arduino `INPUT_PULLUP`) fell into the reserved/analog arm and read a
+  constant 0, so any pulled-up input ignored its wire. That deafens
+  STM32duino SoftwareSerial RX (PB6 `INPUT_PULLUP` + timer-ISR IDR sampling
+  in `recv()`): the start bit never validates low-then-high correctly and
+  every frame dies on stop-bit validation, so `available()` never fires
+  while TX decodes fine on the host observer. Floating (01) now reads the
+  external driver else 0, pull (10) reads the driver else the ODR-selected
+  pull, analog/reserved read 0 (`src/peripherals/gpio.rs` `pin_level`).
+  Same root cause produced DHT22 `nan` (DATA pull-up stuck LOW).
+- GPIO push-pull output IDR read the injected external level instead of the
+  driven one, so a stale host injection (e.g. a sensor idle-HIGH while the
+  firmware drives wake-LOW on a shared wire) flipped firmware readback of
+  firmware's own driven pin. IDR of a push-pull output now reads the driven
+  state (slew-aware); the JS facade `gpioReadOutput()` still honors the
+  external driver, and open-drain-released/input modes are unchanged
+  (`src/peripherals/gpio.rs` `pin_level`).
+- DWT CYCCNT retired `1 + FLASH LATENCY` cycles per instruction while every
+  other clock in the system (SysTick RVR, TIM PSC/ARR, runner instruction
+  budgets) paces one instruction per core-clock cycle: STM32duino
+  `delayMicroseconds()` spins on CYCCNT, so at 72MHz/WS2 it ran 3x fast,
+  collapsing the DHT22 >=1ms wake pulse (~370us, below the sensor minimum)
+  and the 55us pull-up wait (~18us, below the sensor's ~30us reaction time)
+  — firmware listened before the sensor answered, so every read timed out
+  (`nan`). CYCCNT now tracks retired instructions 1:1 regardless of ACR
+  LATENCY (which still programs and reads back); `micros()`/`millis()` were
+  already SysTick-based and are unaffected, and the only in-core CYCCNT
+  consumer is `delayMicroseconds` (`src/peripherals/dwt.rs` `live_rate`).
 
 ### Added
 - `i2c_clear_rx(channel)` wasm export (`src/lib.rs`, `src/system.rs`
@@ -102,6 +181,30 @@ All notable changes to this project will be documented in this file.
   requested byte; plus the register-level pin-down (registered address
   ACKs after a drained queue, per-address NACK preserved, SW reset drops
   the registration).
+- `tests/test_i2c_master_tx.mjs` 28/28 (new, wired into CI right after
+  `test_i2c_js_slave`): the RTC-SET shape — START + addr(W, 0x68) + 8 bytes
+  (register pointer + 7 BCD time bytes, the exact `rtc.adjust` payload)
+  + STOP driven register-level (TXE-polled DR writes, like STM32duino Wire)
+  — every byte surfaces as exactly one ordered `I2cWrite` with one
+  `I2cStart`/`I2cStop`, both sink-backed and virtual-claim (registered,
+  dry queue); a never-served address still NACKs with zero `I2cWrite`.
+  Pins the engine half of "SET writes reach the host" so a silent slave-RX
+  drop can never hide behind working master-RX reads again.
+- `tests/test_all.mjs` GPIO electrical section follows RM0008 Table 20:
+  pull-up/down use nibble 0x8 (CNF=10), floating uses 0x4 (CNF=01, driver
+  else 0), plus pull-up wire-low/high tracking and push-pull driven-wins
+  over a stale injection (facade `gpioReadOutput` still honors the driver).
+- `tests/test_all.mjs` DWT section: CYCCNT tracks retired instructions 1:1
+  at any ACR LATENCY (LATENCY=2 no longer yields 3x); guest-write offset and
+  resume-counting behavior unchanged.
+- `tests/test_dht_onewire.mjs` (new, wired into CI): real STM32duino Blue
+  Pill bit-bang firmware (`tests/arduino_dht_probe`, Adafruit-shaped read on
+  PB0, ELF shipped at `site/arduino_dht_probe.elf`) against a scripted DHT22
+  sensor driven through the public facade (`setInput` waveform at 72MHz
+  instr scale, release detect via GPIOB CRL nibble, `usart1.onData` verdict)
+  — first served wake decodes byte-exact `DHT_OK T:24.60 H:55.50` (checksum
+  `0x23`). Fails on either engine-side kill (pull-up IDR stuck 0, or 3x-fast
+  `delayMicroseconds`) with `DHT_TIMEOUT` instead of a wrong value.
 
 ## [3.3.0] — 2026-10-05 — ADC + TIM wrapper classes, per-batch event ordering
 

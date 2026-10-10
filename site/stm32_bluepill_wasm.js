@@ -657,6 +657,19 @@ export function init_svd(svd_xml) {
 }
 
 /**
+ * Raw engine instruction counter (same domain as pin-event tcounts).
+ * The facade-level instCount does NOT credit IRQ-handler instructions,
+ * so the two counters diverge under interrupt load — host observers must
+ * measure edge ages in THIS domain (now - tcount), never by mixing with
+ * facade counts. Returns full u64 (JS BigInt; safely < 2^53 in practice).
+ * @returns {bigint}
+ */
+export function instruction_count_now() {
+    const ret = wasm.instruction_count_now();
+    return BigInt.asUintN(64, ret);
+}
+
+/**
  * Next pending IRQ within the batch budget (like get_next_pending_interrupt,
  * but capped at 64 per step/step_batch so one hot IRQ can't starve others).
  * @returns {number}

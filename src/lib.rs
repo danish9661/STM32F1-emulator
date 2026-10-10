@@ -237,6 +237,17 @@ pub fn step_batch(count: u32) -> u32 {
     if is_watchdog_reset_requested() { 1 } else { 0 }
 }
 
+/// Raw engine instruction counter (same domain as pin-event tcounts).
+/// The facade-level instCount does NOT credit IRQ-handler instructions,
+/// so the two counters diverge under interrupt load — host observers must
+/// measure edge ages in THIS domain (now - tcount), never by mixing with
+/// facade counts. Returns full u64 (JS BigInt; safely < 2^53 in practice).
+#[wasm_bindgen]
+pub fn instruction_count_now() -> u64 {
+    use std::sync::atomic::Ordering;
+    system::INSTRUCTION_COUNT.load(Ordering::Relaxed)
+}
+
 /// One-call batch processor: advance the instruction count, reset the IRQ
 /// dispatch budget, tick all peripherals, then report watchdog status and
 /// whether any IRQ is pending — so JS needs one crossing per batch instead of

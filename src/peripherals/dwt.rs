@@ -35,11 +35,22 @@ impl Dwt {
         INSTRUCTION_COUNT.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Current cycles per instruction (1 + FLASH wait states, RM0008).
-    /// Read live (not cached) so an ACR write takes effect on the very
-    /// next read/tick with no one-batch lag.
-    fn live_rate(sys: &System) -> u64 {
-        1 + sys.p.flash_latency().min(2) as u64
+    /// Current cycles per instruction: always 1. The engine retires one
+    /// instruction per core-clock cycle everywhere else (SysTick RVR,
+    /// TIM PSC/ARR, runner instruction budgets), and silicon with the
+    /// prefetch buffer enabled retires sequential code at ~1/cycle too,
+    /// so CYCCNT must track the retired-instruction count 1:1.
+    /// (A FLASH-latency multiplier lived here briefly and was reverted:
+    /// instruction pacing ignores wait states, so inflating only the
+    /// counter made DWT-paced delays — STM32duino delayMicroseconds()
+    /// spins on CYCCNT — run (1+LATENCY)x fast relative to every other
+    /// clock. At 72MHz/WS2 that is 3x fast, breaking sub-ms bit-bang
+    /// protocols: the DHT22 start handshake needs a >=1ms wake pulse
+    /// and a 55us pull-up wait, both of which collapsed below the
+    /// sensor's reaction time. ACR LATENCY still programs and reads
+    /// back; it just no longer bends the cycle counter.)
+    fn live_rate(_sys: &System) -> u64 {
+        1
     }
 
     /// Cycles retired so far (exact between ticks).
