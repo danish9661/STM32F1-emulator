@@ -662,6 +662,7 @@ fn run_pair_both(
     let mut out = Vec::new();
     for fused in [true, false] {
         super::thumb::fusion_off(!fused);
+        super::thumb::hoist_off(!fused);
         let mut cpu = Cpu::new(0x20008000, 0x20002001);
         cpu.dsp = false;
         cpu.deliver_irqs = false;
@@ -693,6 +694,7 @@ fn run_pair_both(
         out.push(snap_of(&cpu, &mem));
     }
     super::thumb::fusion_off(false);
+    super::thumb::hoist_off(false);
     (out.remove(0), out.remove(0))
 }
 
@@ -1583,3 +1585,43 @@ fn fast_tag_matches_classify() {
         }
     }
 }
+
+// ---- 32-bit hoist differential: push.w / pop.w-pc vs legacy path ----
+// run_pair_both carries 32-bit halves directly (len-4 dispatches exec32);
+// trailing b-self pads never fuse (no template matches B-first or q==0),
+// so fixed-step comparison is exact for these shapes.
+
+#[test]
+fn hoist_pushw_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &lo in &[0x00u32, 0x0F, 0xF0, 0xF3, 0xFF, 0x55, 0xAA, 0x01] {
+        for &sp in &[0x20008000u32, 0x20007000, 0x20009000] {
+            for s in 0..8 {
+                check_pair(sys, 0xE92Du16, (0x4100 | lo) as u16, &[(13, sp)], 0, 0x9000 + (n & 0xFFFF) + s, "pushw");
+                n += 1;
+            }
+        }
+    }
+    assert!(n == 192);
+}
+
+#[test]
+fn hoist_popw_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &lo in &[0x00u32, 0x0F, 0xF0, 0xF3, 0xFF, 0x55, 0xAA, 0x01] {
+        for &sp in &[0x20008000u32, 0x20007000, 0x20009000] {
+            for s in 0..8 {
+                check_pair(sys, 0xE8BDu16, (0x8100 | lo) as u16, &[(13, sp)], 0, 0x9100 + (n & 0xFFFF) + s, "popw");
+                n += 1;
+            }
+        }
+    }
+    assert!(n == 192);
+}
+

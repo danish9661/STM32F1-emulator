@@ -271,6 +271,20 @@ fn shift_op(v: u32, typ: u32, amt: u32, ci: u32) -> (u32, u32) {
 /// cost is ~zero. Tests run snippets both ways and compare full state.
 static FUSION_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Hoist kill-switch (same differential role as FUSION_OFF): when set, the
+/// exec32 push.w/pop.w hoists never fire and those shapes take the legacy
+/// nested path. Checked last in each guard so production cost is ~zero.
+static HOIST_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn hoist_off(on: bool) {
+    HOIST_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn hoist_live() -> bool {
+    !HOIST_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn fusion_off(on: bool) {
     FUSION_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -2058,6 +2072,86 @@ fn alu_op(
     }
 }
 
+/// Shared LDM/STM multiple-transfer body (T3, E8/E9 space). Extracted
+/// verbatim from the exec32 chain so the dfu-hot push.w/pop.w hoists
+/// below and the legacy path execute literally the same code — no drift.
+/// Callers guarantee the shape already entered this block in legacy
+/// dispatch ((o1 & 0x0E40) == 0x0800 with all earlier exclusions).
+fn ldm_stm_body(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory,
+    o1: u32, o2: u32, pc: u32, op1: u16, op2: u16, rn: usize,
+) -> u32 {
+    let p = o1 & 0x0100 != 0;
+    let u = o1 & 0x0080 != 0;
+    let w = o1 & 0x0020 != 0;
+    let l = o1 & 0x0010 != 0;
+    // P==U (IB/DA shapes) is the SRS/RFE space (Rn==SP selects the
+    // banked form, which needs banked stacks we don't model):
+    // UNDEFINED for Rn!=SP — the oracle (INSN_INVALID) and
+    // Capstone both reject, so fault loudly instead of running
+    // SRS-space as LDM.
+    if p == u {
+    return fault(cpu, pc, op1, op2, 4);
+    }
+    let list = o2;
+    let n = list.count_ones() as u32;
+    if n == 0 {
+    return fault(cpu, pc, op1, op2, 4);
+    }
+    // Writeback with Rn itself in a LOAD list is UNPREDICTABLE
+    // (differential fuzz: the oracle faults INSN_INVALID while a
+    // late check let the loaded values win) — fault BEFORE any
+    // state change. (Stores with Rn in the list keep the original
+    // value, which is silicon-plausible.)
+    if w && l && (list >> rn) & 1 == 1 {
+    return fault(cpu, pc, op1, op2, 4);
+    }
+    let mut a = cpu.regs.r[rn];
+    if p && u {
+    a = a.wrapping_add(4); // IB: first transfer at Rn+4
+    } else if !u {
+    // DB: first transfer 4n below Rn (DA faulted above as
+    // SRS-space, so !u here is always DB).
+    a = a.wrapping_sub(n * 4);
+    }
+    let mut newpc: Option<u32> = None;
+    for i in 0..16 {
+    if (list >> i) & 1 == 1 {
+    if l {
+    let v = mem.read32(a);
+    if i == 15 {
+    newpc = Some(v);
+    } else {
+    // (If Rn itself is in a writeback list the
+    // loaded value wins; firmware never does this.)
+    cpu.regs.r[i as usize] = v;
+    }
+    } else {
+    let v = if i == 15 { (pc + 4) & !3 } else { cpu.regs.r[i as usize] };
+    mem.write32(a, v);
+    }
+    a += 4;
+    }
+    }
+    // Writeback: incrementing modes (IA/IB) end at the final
+    // address; decrementing modes (DA/DB) write back the START
+    // address — for loads AND stores (differential fuzz: LDMDB
+    // wrote back base instead of base-4n). Rn-in-list loads
+    // faulted above, so no suppression case remains here.
+    if w {
+    cpu.regs.r[rn] = if !u {
+    a.wrapping_sub(n * 4)
+    } else {
+    a
+    };
+    }
+    if let Some(t) = newpc {
+    return branch(cpu, sys, mem, t, pc, op1, op2, 4);
+    }
+    adv(cpu, pc, 4);
+    return 1;
+}
+
 pub fn exec32(
     cpu: &mut Cpu,
     sys: &WasmSystem,
@@ -2074,6 +2168,20 @@ pub fn exec32(
     if !it_ok(cpu) {
             adv(cpu, pc, 4);
             return 1;
+        }
+        // Hot 32-bit hoists (dfu main-loop rotation, dynamic census):
+        // push.w (E92D/41xx) and pop.w-pc (E8BD/81xx) each retire ~1.25M
+        // per 20M window but sit 7th in the else-if chain behind deep
+        // nesting. Guards are exact observed shapes provably inside the
+        // legacy LDM/STM block ((o1&0x0E40)==0x0800 path with all earlier
+        // exclusions missed: TBB/LDREX/STREX/STRD need different o1
+        // nibbles; n>=2 and bit13==0 hold for the full hi-cells so the
+        // block's fault arms can't fire); the shared body executes.
+        if o1 == 0xE92D && (o2 >> 8) == 0x41 && hoist_live() {
+            return ldm_stm_body(cpu, sys, mem, o1, o2, pc, op1, op2, (o1 & 0xF) as usize);
+        }
+        if o1 == 0xE8BD && (o2 >> 8) == 0x81 && hoist_live() {
+            return ldm_stm_body(cpu, sys, mem, o1, o2, pc, op1, op2, (o1 & 0xF) as usize);
         }
         // USAT / SSAT (saturate). Shares hw1 with MSR (0xF380|Rn) but o2[15]
         // is always 0 here (imm5 lives in o2[14:10]); MSR needs o2>=0x8800,
@@ -3418,75 +3526,7 @@ pub fn exec32(
         // IA=P0U1, IB=P1U1, DA=P0U0, DB=P1U0 (the old code keyed everything
         // off P alone, swapping IB/DB and DA/IA semantics).
         if (o1 & 0x0E40) == 0x0800 {
-            let p = o1 & 0x0100 != 0;
-            let u = o1 & 0x0080 != 0;
-            let w = o1 & 0x0020 != 0;
-            let l = o1 & 0x0010 != 0;
-            // P==U (IB/DA shapes) is the SRS/RFE space (Rn==SP selects the
-            // banked form, which needs banked stacks we don't model):
-            // UNDEFINED for Rn!=SP — the oracle (INSN_INVALID) and
-            // Capstone both reject, so fault loudly instead of running
-            // SRS-space as LDM.
-            if p == u {
-                return fault(cpu, pc, op1, op2, 4);
-            }
-            let list = o2;
-            let n = list.count_ones() as u32;
-            if n == 0 {
-                return fault(cpu, pc, op1, op2, 4);
-            }
-            // Writeback with Rn itself in a LOAD list is UNPREDICTABLE
-            // (differential fuzz: the oracle faults INSN_INVALID while a
-            // late check let the loaded values win) — fault BEFORE any
-            // state change. (Stores with Rn in the list keep the original
-            // value, which is silicon-plausible.)
-            if w && l && (list >> rn) & 1 == 1 {
-                return fault(cpu, pc, op1, op2, 4);
-            }
-            let mut a = cpu.regs.r[rn];
-            if p && u {
-                a = a.wrapping_add(4); // IB: first transfer at Rn+4
-            } else if !u {
-                // DB: first transfer 4n below Rn (DA faulted above as
-                // SRS-space, so !u here is always DB).
-                a = a.wrapping_sub(n * 4);
-            }
-            let mut newpc: Option<u32> = None;
-            for i in 0..16 {
-                if (list >> i) & 1 == 1 {
-                    if l {
-                        let v = mem.read32(a);
-                        if i == 15 {
-                            newpc = Some(v);
-                        } else {
-                            // (If Rn itself is in a writeback list the
-                            // loaded value wins; firmware never does this.)
-                            cpu.regs.r[i as usize] = v;
-                        }
-                    } else {
-                        let v = if i == 15 { (pc + 4) & !3 } else { cpu.regs.r[i as usize] };
-                        mem.write32(a, v);
-                    }
-                    a += 4;
-                }
-            }
-            // Writeback: incrementing modes (IA/IB) end at the final
-            // address; decrementing modes (DA/DB) write back the START
-            // address — for loads AND stores (differential fuzz: LDMDB
-            // wrote back base instead of base-4n). Rn-in-list loads
-            // faulted above, so no suppression case remains here.
-            if w {
-                cpu.regs.r[rn] = if !u {
-                    a.wrapping_sub(n * 4)
-                } else {
-                    a
-                };
-            }
-            if let Some(t) = newpc {
-                return branch(cpu, sys, mem, t, pc, op1, op2, 4);
-            }
-            adv(cpu, pc, 4);
-            return 1;
+            return ldm_stm_body(cpu, sys, mem, o1, o2, pc, op1, op2, rn);
         }
         // STRD / LDRD: same bits[11:9]==100 as LDM/STM but bit6==1
         // (complementary patterns 0x0800 vs 0x0840; GAS-verified).

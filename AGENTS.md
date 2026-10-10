@@ -790,6 +790,10 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   fast-path tags (65K-exhaustive proof) + unchecked load. A/B: oled
   +14%, showcase +13%, coremark +5–8%, dfu +7–8%, periph flat. lib
   121/121, census + fuzz green, all gates green.
+- **32-bit push.w/pop.w hoists**: dfu is ~1/3 32-bit (dynamic census);
+  shared `ldm_stm_body` + exact-shape hoists. Native per-op +7–8%;
+  wasm firmware-level below box resolution — kept on per-op proof +
+  safety with revert trigger. lib 123/123, all gates green.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

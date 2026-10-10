@@ -155,6 +155,24 @@ All notable changes to this project will be documented in this file.
   kept (strictly non-negative everywhere). Proof: lib 121/121, census
   0-gap both widths, fuzz seeds 1+4 zero divergences, all behavior gates
   green on the ship binary.
+- 32-bit push.w/pop.w hoists (dfu floor work): a dynamic 32-bit census
+  (temp 65K counters, removed after measurement) showed dfu's stream is
+  ~1/3 32-bit — six shapes in lockstep, incl. `push.w` (E92D/41xx) and
+  `pop.w-pc` (E8BD/81xx) at ~1.25M per 20M window — while the static
+  corpus claims <2.5%. The 70-line LDM/STM block was extracted into
+  shared `ldm_stm_body` (legacy site calls it: zero duplication, zero
+  drift) and the two exact shapes hoist to it at exec32 top (guards
+  provably inside the legacy path: TBB/LDREX/STREX/STRD need different
+  o1 nibbles; n>=2 and bit13==0 hold for the full hi-cells). Proof: 2
+  differential suites (192 pair-cases each, hoist-vs-legacy via a
+  `hoist_off` kill-switch) + full gates green. Value: native per-op
+  micro-benchmark (temp, removed) +7.1% push.w / +8.1% pop.w-pc;
+  firmware-level wasm A/B below box resolution (med 1.000, band
+  0.98–1.17 under a competing sweep) — kept on per-op proof +
+  proof-of-safety with an explicit revert trigger if a quiet A/B ever
+  shows ≤0. (Whole-loop fusion was rejected first: the "10-op loop" is
+  leaf helpers with internal exits + 32-bit RMW + calls — trace-JIT
+  territory.)
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured
