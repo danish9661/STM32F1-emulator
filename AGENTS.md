@@ -31,7 +31,7 @@ Full-system emulation of an STM32F103C8 (Bluepill) microcontroller running real 
 ```
 
 ### Performance
-- ~80M IPS real-world, native CPU (periph39 200M in ~2.5s; lighter firmware 118–140 headless; browser periph39 ~117–119 MIPS) WITH full MPU enforcement live on every access — the off-state fast path (plain-static `MPU_ON` mirror + cold-outlined slow/periph arms + raw fetch, see docs/CPU.md "Memory protection") holds the cost to ~5% over gates-compiled-out (2.6s). Lesson: ~1B gate evals/run make ANY per-access call shape cost ~30% in V8 (measured 2.6→3.9s across method-call, inlined-check, Cell-field, atomic-mirror and cold_path variants); only zero-call + small-hot-skeleton recovered it (3.9→2.8s). (Fusion rounds v1–v4 then cut dispatch: periph39 2.8s → 2.5s; see CHANGELOG.)
+- ~80M IPS real-world, native CPU (periph39 200M in ~2.5s; lighter firmware 118–140 headless; browser periph39 typically 55–70 on a shared/contended box, spiking past 110 when the host boosts — single-shot browser windows are frequency-dominated, so only interleaved ratios are trustworthy) WITH full MPU enforcement live on every access — the off-state fast path (plain-static `MPU_ON` mirror + cold-outlined slow/periph arms + raw fetch, see docs/CPU.md "Memory protection") holds the cost to ~5% over gates-compiled-out (2.6s). Lesson: ~1B gate evals/run make ANY per-access call shape cost ~30% in V8 (measured 2.6→3.9s across method-call, inlined-check, Cell-field, atomic-mirror and cold_path variants); only zero-call + small-hot-skeleton recovered it (3.9→2.8s). (Fusion rounds v1–v4 then cut dispatch: periph39 2.8s → 2.5s; see CHANGELOG.)
 - **step_batch ticks once per batch, not per instruction** (`src/lib.rs`): all peripheral `tick()`s are instruction-delta based, so advancing INSTRUCTION_COUNT by `count` + one `sys.tick()` is equivalent but ~100K× cheaper — was ~55% of runtime (wasm-function[36]/[364] under `step_batch` in cpu-prof); **3.8× speedup** (21.2s → 5.6s for 100M). Requires per-batch tickers to process ALL accumulated ticks — `tim.rs advance()` had a `ticks.min(1000)` cap that dropped timer events (TIM2 IRQ never fired: CNT stuck at 12K of ARR=36K); removed.
 - Peripheral access hooks are NOT a bottleneck anymore: measured 0.001 accesses/instruction (~27K per 50M instr) for the periph37 firmware
 - `step_batch()` gave 3.15× speedup over per-instruction `step()`
@@ -805,10 +805,20 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   shared `ldm_stm_body` + exact-shape hoists. Native per-op +7–8%;
   wasm firmware-level below box resolution — kept on per-op proof +
   safety with revert trigger. lib 123/123, all gates green.
+- **Scaffold batch** (NVIC pending-mirror + 6× force-inline + dead
+  `cycles` deletion + bank-sync removal): in-binary A/B vs table
+  baseline — oled +4.5%, showcase +9%, coremark +11.5%, dfu +14.4%,
+  periph flat (21-rep median exactly 1.000). The sync removal was the
+  surprise: reader audit proved no consumer of mid-thread bank freshness
+  (entry copies, live MRS/MSR, explicit switches) and mini_rtos 6/6
+  confirms the FreeRTOS wedge stays fixed — it was vestigial overhead
+  (2 branches + store per op). Kept: strictly non-negative (periph
+  exactly flat across 21 reps).
 - **fast_tag second wave**: 7 more hot first-ops (LSL/MOV/B/CBZ/PUSH/
-  POP/STR) skipping the table load. Native per-op -2–20% (controls
-  exactly 1.000); wasm below box resolution — same keep-standard as
-  hoists, with revert trigger. Exhaustive 65K proof + all gates green.
+  POP/STR) skipping the table load. In-binary A/B vs 5-tag (11 reps,
+  quiet box): oled +6.4%, showcase +8.5%, coremark +3.5%, dfu +4.2%,
+  periph +8.1% — all bands below 1.0. Native per-op agreed (-2–20%).
+  Exhaustive 65K proof + all gates green.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

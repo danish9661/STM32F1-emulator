@@ -179,6 +179,15 @@ All notable changes to this project will be documented in this file.
   1.000); wasm firmware-level unresolvable under a competing sweep —
   kept on the same standard (native directional + 65K-exhaustive safety
   + full gates), revert trigger if a quiet A/B ever shows ≤0.
+  (Resolved quiet-box: oled +6.4%, showcase +8.5%, coremark +3.5%, dfu
+  +4.2%, periph +8.1%, all bands below 1.0 — committed on this proof.)
+- Scaffold batch (NVIC pending-mirror + force-inline + dead-cycles
+  deletion + bank-sync removal): the sync removal surprised — full
+  reader/bank-assert audit proved the every-op sync vestigial (entry
+  copies live r13, MRS/MSR live-resolve, switches explicit; mini_rtos
+  6/6 confirms the wedge stays fixed). In-binary A/B: oled +4.5%,
+  showcase +9%, coremark +11.5%, dfu +14.4%, periph flat (21-rep median
+  exactly 1.000). lib 123/123 + full gates green.
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

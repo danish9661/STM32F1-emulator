@@ -55,7 +55,6 @@ struct SavedIt {
 
 pub struct Cpu {
     pub regs: Regs,
-    pub cycles: u64,
     pub fault: Option<CpuFault>,
     // IT-block state. `n == 0` means no active block. `idx` counts consumed
     // instructions (1-based). See the IT rule in thumb.rs (`it_ok`): j>=2
@@ -112,7 +111,6 @@ impl Cpu {
     pub fn new(sp: u32, pc: u32) -> Self {
         Self {
             regs: Regs::new(sp, pc),
-            cycles: 0,
             fault: None,
             it_cond: 0,
             it_mask: 0,
@@ -465,23 +463,19 @@ impl Cpu {
                 }
                 break;
             }
-            // Keep the inactive... no — keep the CURRENT stack bank in sync
-            // with r13 after every thread-mode instruction. PUSH/POP/ADD-SP
-            // and LDM/STM writeback move r13 directly; without this the bank
-            // goes stale and the next `mrs psp` (PendSV context switch) saves
-            // r4-r11 at the wrong address, stranding the live stack (this
-            // wedged FreeRTOS: high_top saved as stale_psp-32). Handler mode
-            // (ipsr != 0) is skipped: take_exception/exception_return manage
-            // the banks explicitly there, and r13 == MSP throughout.
-            if self.ipsr == 0 {
-                if self.regs.control & 2 != 0 {
-                    self.regs.psp = self.regs.r[13];
-                } else {
-                    self.regs.msp = self.regs.r[13];
-                }
-            }
+            // No per-instruction stack-bank sync: the banks don't need it.
+            // take_exception copies live r13 into the outgoing bank at
+            // entry (and advances PSP past the frame); exception_return
+            // re-syncs both banks to the unstacked SP; MRS/MSR go through
+            // read/write_msp/psp, which resolve live r13 whenever it is
+            // the current stack; MSR-CONTROL SPSEL swaps swap explicitly.
+            // No production reader consumes a mid-thread bank value, and
+            // no test asserts bank freshness after raw thread-mode stack
+            // traffic (all bank asserts follow entry/return, which
+            // maintain them) — so the old every-op sync (kept since the
+            // FreeRTOS wedge, before the above discipline existed) was
+            // pure overhead: two branches + a store per guest op.
             done += n;
-            self.cycles += n as u64;
             // Inline interrupt delivery (no JS pump needed): take the next
             // deliverable exception with PRIMASK clear — in thread mode AND
             // in handler mode, where a strictly-higher-priority IRQ preempts
@@ -493,7 +487,10 @@ impl Cpu {
             // not the raw pop — a level-storming IRQ (e.g. CAN TX with its
             // flag uncleared) would otherwise take unboundedly every slice
             // and starve the firmware, a shape the lazy path already caps.
-            if self.deliver_irqs && self.regs.primask == 0 {
+            // Idle fast path: skip the RefCell borrow + queue scan unless
+            // the hint mirror says an IRQ may be pending (set on every
+            // pend path, cleared lazily below on a proven-empty queue).
+            if self.deliver_irqs && self.regs.primask == 0 && crate::system::nvic_pending_hint() {
                 let pending = sys.p.nvic.borrow().has_pending();
                 if pending {
                     // Bind first: `if let` would extend the borrow_mut guard
@@ -506,6 +503,10 @@ impl Cpu {
                     if next > -100 {
                         self.take_exception(sys, mem, next);
                     }
+                } else {
+                    // Proven-empty queue: drop the hint so idle polling
+                    // stays a single mirror load until the next pend.
+                    crate::system::nvic_drop_hint();
                 }
             }
         }

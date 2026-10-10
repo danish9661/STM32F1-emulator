@@ -64,6 +64,7 @@ fn fault(c: &mut Cpu, pc: u32, op1: u16, op2: u16, l: u8) -> u32 {
 /// through the stacked context instead. Branching to ARM state (bit0
 /// clear, non-EXC_RETURN) is a fault on Cortex-M (no ARM state); halting
 /// loudly beats silently running garbage.
+#[inline(always)]
 fn branch(
     c: &mut Cpu,
     sys: &WasmSystem,
@@ -107,6 +108,7 @@ fn nzc(c: &mut Cpu, v: u32, co: u32) {
         | if v & 0x80000000 != 0 { 0x80000000 } else { 0 }
         | if co != 0 { 0x20000000 } else { 0 };
 }
+#[inline(always)]
 fn add_flags(c: &mut Cpu, a: u32, b: u32, ci: u32) -> u32 {
     let r = a.wrapping_add(b).wrapping_add(ci);
     let carry = (a as u64) + (b as u64) + (ci as u64) > 0xFFFF_FFFF;
@@ -121,6 +123,7 @@ fn add_flags(c: &mut Cpu, a: u32, b: u32, ci: u32) -> u32 {
         | if over { 0x10000000 } else { 0 };
     r
 }
+#[inline(always)]
 fn sub_flags(c: &mut Cpu, a: u32, b: u32, ci: u32) -> u32 {
     // ci here is "carry in" (1 = no borrow). NOT carry = borrow.
     let r = a.wrapping_sub(b).wrapping_sub(1 - ci);
@@ -140,6 +143,7 @@ fn sub_flags(c: &mut Cpu, a: u32, b: u32, ci: u32) -> u32 {
 fn carry(c: &Cpu) -> u32 {
     (c.regs.xpsr >> 29) & 1
 }
+#[inline(always)]
 fn cond_ok(c: &Cpu, cc: u32) -> bool {
     let x = c.regs.xpsr;
     let n = x & 0x80000000 != 0;
@@ -169,6 +173,7 @@ fn cond_ok(c: &Cpu, cc: u32) -> bool {
 /// Always consumes one IT slot. GAS-verified rule: slot j>=2 uses `cond`
 /// iff mask bit (5-j) equals cond bit 0, else the inverse condition.
 /// Slot 1 always uses `cond`. `n = 4 - trailing_zeros(mask)`.
+#[inline(always)]
 fn it_ok(c: &mut Cpu) -> bool {
     if c.it_n == 0 {
         return true;
@@ -215,6 +220,7 @@ fn expand_imm(imm12: u32, carry_in: u32) -> (u32, u32) {
     }
 }
 /// Shifted-register operand. Returns (result, carry_out).
+#[inline(always)]
 fn shift_op(v: u32, typ: u32, amt: u32, ci: u32) -> (u32, u32) {
     match typ {
         0 => {

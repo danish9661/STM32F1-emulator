@@ -68,6 +68,10 @@ impl Nvic {
     }
 
     pub fn set_intr_pending(&mut self, irq: i32) {
+        // All peripheral/USC/STIR/SysTick pends funnel through here: mark
+        // the hot-loop hint mirror (conservative — invalid IRQs also mark;
+        // a spurious hint costs one wasted borrow, never a missed IRQ).
+        crate::system::nvic_mark_pending();
         if irq < 0 {
             self.pending |= 1u128 << (IRQ_OFFSET + irq);
         } else if let Some((idx, mask)) = Self::irq_reg_idx(irq) {
@@ -356,6 +360,9 @@ impl Peripheral for Nvic {
                 self.enable[i] |= value;
                 let newly_enabled = self.enable[i] & !was;
                 let newly_pending = self.pending_reg[i] & newly_enabled;
+                if newly_pending != 0 {
+                    crate::system::nvic_mark_pending();
+                }
                 for b in 0..32 {
                     if newly_pending & (1 << b) != 0 {
                         self.pending |= 1u128 << (IRQ_OFFSET as u32 + i as u32 * 32 + b) as u128;
@@ -370,6 +377,9 @@ impl Peripheral for Nvic {
                 let i = ((offset - 0x100) / 4) as usize;
                 let new_pending = value & !self.pending_reg[i];
                 self.pending_reg[i] |= value;
+                if new_pending != 0 {
+                    crate::system::nvic_mark_pending();
+                }
                 for b in 0..32 {
                     if new_pending & (1 << b) != 0 {
                         self.pending |= 1u128 << (IRQ_OFFSET as u32 + i as u32 * 32 + b) as u128;

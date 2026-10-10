@@ -193,6 +193,31 @@ pub(crate) fn sync_watch_gate(swd: &crate::peripherals::swd::SwdState) {
     unsafe { *std::ptr::addr_of_mut!(WATCH_ON) = swd.any_watch(); }
 }
 
+/// IRQ-pending hint mirror for the CPU hot loop. The per-instruction poll
+/// currently pays a RefCell borrow + u128 load on every guest op; this
+/// collapses the idle path to one `global.get` + branch. Set on every
+/// pend path (conservative: invalid-IRQ pends also set it), cleared
+/// lazily when a poll finds the queue empty. A stale-true mirror costs
+/// exactly one wasted borrow then self-clears; a false mirror is
+/// impossible (every `pending |=` site marks it), so no IRQ is ever
+/// missed and delivery latency is bit-identical — only idle polling is
+/// cheaper. Fresh-install residue likewise self-heals on the first poll.
+static mut NVIC_PENDING_HINT: bool = false;
+
+/// Hot-loop poll gate: maybe an IRQ is pending.
+#[inline(always)]
+pub(crate) fn nvic_pending_hint() -> bool {
+    unsafe { *std::ptr::addr_of!(NVIC_PENDING_HINT) }
+}
+
+pub(crate) fn nvic_mark_pending() {
+    unsafe { *std::ptr::addr_of_mut!(NVIC_PENDING_HINT) = true; }
+}
+
+pub(crate) fn nvic_drop_hint() {
+    unsafe { *std::ptr::addr_of_mut!(NVIC_PENDING_HINT) = false; }
+}
+
 /// Fresh-install reset (init/init_svd build a default SwdState anyway; this
 /// clears the process-wide mirrors).
 pub(crate) fn reset_debug_mirrors() {
