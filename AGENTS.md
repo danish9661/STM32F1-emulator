@@ -792,6 +792,10 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   dispatch ~20–25% via fusion response ⇒ decode-table alone caps ~+25%
   on dfu — Phase 2 mandatory, Phase 1 justified for periph-likes. Batch
   sweep: 20K≡100K, 500K breaks 2 checks ⇒ stepping ~0%, 20K stays.
+  Driven-DFU census (temp counters, since removed): rotation persists
+  under enumeration+DNLOAD plus a T3-ALU-imm/F8-transfer second tier
+  (~3%×4); leftovers live in exec32's intricate blocks — classify32
+  scoped, not started.
 - **Phase 1 decode table**: 40-arm chain → classify + 64KB table +
   br_table executor (bodies verbatim, no invalidation needed); top-5
   fast-path tags (65K-exhaustive proof) + unchecked load. A/B: oled
