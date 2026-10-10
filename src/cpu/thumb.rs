@@ -340,9 +340,8 @@ fn fused_bcc_tail(
     let imm = sx(((o2 & 0xFF) << 1) as u32, 9);
     let pc2 = pc.wrapping_add(2);
     if cond_ok(cpu, cc) {
-        // Branch completes the second op: 1 (first) + branch's 1, or 1 + 0
-        // when the branch itself stops (misaligned/EXC_RETURN fault).
-        return branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2) + 1;
+        let b = branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2);
+        return fused_branch_done(cpu, b, o2, pc, pc2);
     }
     adv(cpu, pc, 4);
     2
@@ -375,6 +374,27 @@ fn fused_interlock(cpu: &mut Cpu, pc: u32) -> Option<u32> {
         return Some(1);
     }
     None
+}
+
+/// Branch-tail completion for fused pairs: legacy retires op1 (count 1),
+/// then op2's branch (count 1 — or 0 with a pc2 fault record when the
+/// branch itself stops: even BX target, BLX-validated faults, or a failed
+/// EXC_RETURN reshape). Returns the fused count. Without the b == 0 arm a
+/// faulting indirect branch would be credited 1 and re-executed forever
+/// instead of halting loudly like the sequential path.
+#[inline(always)]
+fn fused_branch_done(cpu: &mut Cpu, b: u32, o2: u32, pc: u32, pc2: u32) -> u32 {
+    if b == 0 {
+        if cpu.fault.is_none() {
+            cpu.fault = Some(super::CpuFault { pc: pc2, op1: o2 as u16, op2: 0, len: 2 });
+        }
+        // op1 retired (advance past it) exactly like the sequential path,
+        // which completed op1 before op2 faulted — so post-mortem r15
+        // matches too, not just the fault record.
+        adv(cpu, pc, 2);
+        return 0;
+    }
+    2
 }
 
 /// Shared second-op tails for v2 fusion pairs: each executes the o2 body
@@ -465,9 +485,8 @@ fn fused_tail_b(
     }
     let pc2 = pc.wrapping_add(2);
     let imm = sx(((o2 & 0x7FF) << 1) as u32, 12);
-    // B completes the second op: 1 (first) + branch's 1 (targets are always
-    // Thumb-aligned here, but keep the +1 generic like fused_bcc_tail).
-    branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2) + 1
+    let b = branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(imm)) | 1, pc2, o2 as u16, 0, 2);
+    fused_branch_done(cpu, b, o2, pc, pc2)
 }
 
 fn fused_tail_cbz(
@@ -485,10 +504,73 @@ fn fused_tail_cbz(
         rr(cpu, rn, pc2) != 0
     };
     if take {
-        return branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(nz)) | 1, pc2, o2 as u16, 0, 2) + 1;
+        let b = branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(nz)) | 1, pc2, o2 as u16, 0, 2);
+        return fused_branch_done(cpu, b, o2, pc, pc2);
     }
     adv(cpu, pc, 4);
     2
+}
+
+/// HI-MOV shape probe (shared by v3 HI-first/STR/LDRB seconds): h == 2
+/// (MOV) but never MOV-pc — rd == 15 branches, so fusing it would execute
+/// the fallthrough after a taken branch.
+#[inline(always)]
+fn is_himov(o2: u32) -> bool {
+    (o2 & 0xFC00) == 0x4400 && ((o2 >> 8) & 3) == 2 && ((o2 & 7) | ((o2 >> 4) & 8)) != 15
+}
+
+/// BX/BLX-reg shape probe for fused (LDR, BX) returns.
+#[inline(always)]
+fn is_bx_shape(o2: u32) -> bool {
+    (o2 & 0xFC00) == 0x4400 && ((o2 >> 8) & 3) == 3
+}
+
+fn fused_tail_himov(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let rs2 = ((o2 >> 3) & 0xF) as usize;
+    let rd2 = ((o2 & 7) | ((o2 >> 4) & 8)) as usize;
+    let v2 = rr(cpu, rs2, pc2);
+    cpu.regs.r[rd2] = v2;
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_adds(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let rd2 = ((o2 >> 8) & 7) as usize;
+    let r2 = add_flags(cpu, rr(cpu, rd2, pc2), o2 & 0xFF, 0);
+    cpu.regs.r[rd2] = r2;
+    adv(cpu, pc, 4);
+    2
+}
+
+fn fused_tail_bx(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o2: u32, pc: u32,
+) -> u32 {
+    if let Some(stops) = fused_interlock(cpu, pc) {
+        return stops;
+    }
+    // BX/BLX-reg body verbatim from the HI arm (h == 3), re-based at pc2:
+    // BLX validates bits[2:0] == 000 BEFORE writing LR and faults even
+    // targets like hardware; EXC_RETURN values reshape via branch().
+    let pc2 = pc.wrapping_add(2);
+    let t = rr(cpu, ((o2 >> 3) & 0xF) as usize, pc2);
+    if o2 & 0x80 != 0 {
+        if o2 & 7 != 0 {
+            // op1 retired before op2 faulted (sequential r15 exactness).
+            adv(cpu, pc, 2);
+            return fault(cpu, pc2, o2 as u16, 0, 2);
+        }
+        cpu.regs.r[14] = (pc2 + 2) | 1;
+    }
+    let b = branch(cpu, sys, mem, t, pc2, o2 as u16, 0, 2);
+    fused_branch_done(cpu, b, o2, pc, pc2)
 }
 
 // ---- v2 fused pairs (first-body verbatim from its arm + shared tail) ----
@@ -638,6 +720,153 @@ fn fused_subsi_cmp(
     fused_tail_cmp(cpu, sys, mem, o2, pc)
 }
 
+// ---- v3 fused pairs (dynamic-census driven; same fallback discipline) ----
+// A: (CMP-reg, Bcc) — hot compare-then-loop-test (12.5% oled/showcase).
+fn fused_cmpr_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rs, rd) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    cpu.it_suppress = false; // mirror CMP-reg arm (no-op under the it_n gate)
+    sub_flags(cpu, rr(cpu, rd, pc), rr(cpu, rs, pc), 1);
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
+// C: (HI-MOV, HI-MOV) — register shuffling in prologues (2.9% coremark).
+fn fused_himov_himov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rs = ((o1 >> 3) & 0xF) as usize;
+    let rd = ((o1 & 7) | ((o1 >> 4) & 8)) as usize;
+    let v = rr(cpu, rs, pc);
+    cpu.regs.r[rd] = v;
+    fused_tail_himov(cpu, sys, mem, o2, pc)
+}
+
+// E: (STR-imm, HI-MOV) — spill then shuffle (2.3% coremark).
+fn fused_str_himov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    mem.write32(addr, rr(cpu, rt, pc));
+    fused_tail_himov(cpu, sys, mem, o2, pc)
+}
+
+// F: (HI-MOV, ADDS-imm8) — shuffle then bump (2.1% coremark).
+fn fused_himov_adds(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rs = ((o1 >> 3) & 0xF) as usize;
+    let rd = ((o1 & 7) | ((o1 >> 4) & 8)) as usize;
+    let v = rr(cpu, rs, pc);
+    cpu.regs.r[rd] = v;
+    fused_tail_adds(cpu, sys, mem, o2, pc)
+}
+
+// G: (PUSH, LDRlit) — save regs then load constant (10% dfu memcpy loop).
+fn fused_push_lit(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let list = o1 & 0xFF;
+    let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
+    let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
+    cpu.regs.r[13] = sp;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            mem.write32(sp, cpu.regs.r[i as usize]);
+            sp += 4;
+        }
+    }
+    if o1 & 0x100 != 0 {
+        mem.write32(sp, cpu.regs.r[14]);
+    }
+    fused_tail_lit(cpu, sys, mem, o2, pc)
+}
+
+// H: (POP-noPC, LSL-imm) — restore then shift (10% dfu). Guard proves R == 0
+// (no return branch), so the fallthrough is the only path.
+fn fused_pop_lsl(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let list = o1 & 0xFF;
+    let mut sp = cpu.regs.r[13];
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            cpu.regs.r[i as usize] = mem.read32(sp);
+            sp += 4;
+        }
+    }
+    cpu.regs.r[13] = sp;
+    fused_tail_lsl(cpu, sys, mem, o2, pc)
+}
+
+// I: (LDR-imm, BX/BLX) — load target then return/call (12.9% oled/showcase).
+fn fused_ldri_bx(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add(((o1 >> 6) & 0x1F) * 4);
+    cpu.regs.r[rt] = mem.read32(addr);
+    fused_tail_bx(cpu, sys, mem, o2, pc)
+}
+
+// J: (LDRlit, CBZ/CBNZ) — null-check after literal load (10% dfu).
+fn fused_lit_cbz(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rt = ((o1 >> 8) & 7) as usize;
+    let base = (pc + 4) & !3;
+    cpu.regs.r[rt] = mem.read32(base.wrapping_add((o1 & 0xFF) * 4));
+    fused_tail_cbz(cpu, sys, mem, o2, pc)
+}
+
+// K: (ADDS-imm8, CBZ/CBNZ) — bump then null-check (2.1% coremark).
+fn fused_adds_cbz(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rd = ((o1 >> 8) & 7) as usize;
+    let r = add_flags(cpu, rr(cpu, rd, pc), o1 & 0xFF, 0);
+    cpu.regs.r[rd] = r;
+    fused_tail_cbz(cpu, sys, mem, o2, pc)
+}
+
+// L: (LDRB, HI-MOV) — byte load then shuffle (2.1% coremark).
+fn fused_ldrb_himov(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rn, rt) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let addr = rr(cpu, rn, pc).wrapping_add((o1 >> 6) & 0x1F);
+    cpu.regs.r[rt] = mem.read8(addr) as u32;
+    fused_tail_himov(cpu, sys, mem, o2, pc)
+}
+
+// M: (ADD-hi, Bcc) — high-reg add then loop-test (2.2% coremark). Guard
+// proves rd != 15 (ADD-pc branches, never falls through).
+fn fused_hiadd_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let rs = ((o1 >> 3) & 0xF) as usize;
+    let rd = ((o1 & 7) | ((o1 >> 4) & 8)) as usize;
+    let r = rr(cpu, rd, pc).wrapping_add(rr(cpu, rs, pc));
+    cpu.regs.r[rd] = r;
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
+// N: (EXTEND, Bcc) — unpack then loop-test (1.8% coremark).
+fn fused_ext_bcc(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
+) -> u32 {
+    let (rs, rd) = (((o1 >> 3) & 7) as usize, (o1 & 7) as usize);
+    let v = rr(cpu, rs, pc);
+    cpu.regs.r[rd] = match (o1 >> 6) & 3 {
+        0 => sx(v & 0xFFFF, 16),
+        1 => sx(v & 0xFF, 8),
+        2 => v & 0xFFFF,
+        _ => v & 0xFF,
+    };
+    fused_bcc_tail(cpu, sys, mem, o2, pc)
+}
+
 /// Fused (LDR-imm, Bcc): load then loop-test, via the shared Bcc tail.
 fn fused_ldri_bcc(
     cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32,
@@ -688,6 +917,18 @@ pub fn exec16(
     }
     // high-register ops + BX/BLX (op select is bits[9:8])
     if o & 0xFC00 == 0x4400 {
+        // v3 fusion, dynamic-census driven (fusion_live() last each line):
+        // (HI-MOV, HI-MOV) register shuffling, (HI-MOV, ADDS-imm8),
+        // (ADD-hi rd!=15, Bcc). BX/CMP-hi firsts take the legacy path.
+        if cpu.it_n == 0 && ((o >> 8) & 3) == 2 && ((o & 7) | ((o >> 4) & 8)) != 15 && is_himov(q) && fusion_live() {
+            return fused_himov_himov(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && ((o >> 8) & 3) == 2 && ((o & 7) | ((o >> 4) & 8)) != 15 && (q & 0xF800) == 0x3000 && fusion_live() {
+            return fused_himov_adds(cpu, sys, mem, o, q, pc);
+        }
+        if cpu.it_n == 0 && ((o >> 8) & 3) == 0 && ((o & 7) | ((o >> 4) & 8)) != 15 && is_bcc_shape(q) && fusion_live() {
+            return fused_hiadd_bcc(cpu, sys, mem, o, q, pc);
+        }
         let h = (o >> 8) & 3;
         let rs = ((o >> 3) & 0xF) as usize;
         let rd = ((o & 7) | ((o >> 4) & 8)) as usize;
@@ -770,6 +1011,10 @@ pub fn exec16(
         if cpu.it_n == 0 && (q & 0xF800) == 0x6000 && fusion_live() {
             return fused_lit_str(cpu, sys, mem, o, q, pc);
         }
+        // v3 fusion: (LDRlit, CBZ/CBNZ) null-check after load (10% dfu).
+        if cpu.it_n == 0 && (q & 0xF500) == 0xB100 && fusion_live() {
+            return fused_lit_cbz(cpu, sys, mem, o, q, pc);
+        }
         let rt = ((o >> 8) & 7) as usize;
         let base = (pc + 4) & !3;
         cpu.regs.r[rt] = mem.read32(base.wrapping_add((o & 0xFF) * 4));
@@ -797,6 +1042,10 @@ pub fn exec16(
         if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
             return fused_ldri_bcc(cpu, sys, mem, o, q, pc);
         }
+        // v3 fusion: (LDR-imm, BX/BLX) load-then-return (12.9% oled).
+        if cpu.it_n == 0 && is_bx_shape(q) && fusion_live() {
+            return fused_ldri_bx(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
         cpu.regs.r[rt] = mem.read32(addr);
@@ -805,6 +1054,10 @@ pub fn exec16(
     }
     // ALU ops
     if o & 0xFC00 == 0x4000 {
+        // v3 fusion: (CMP-reg, Bcc) hot compare-then-loop-test.
+        if cpu.it_n == 0 && ((o >> 6) & 0xF) == 10 && is_bcc_shape(q) && fusion_live() {
+            return fused_cmpr_bcc(cpu, sys, mem, o, q, pc);
+        }
         let sop = (o >> 6) & 0xF;
         let (rs, rd) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let a = rr(cpu, rd, pc);
@@ -995,6 +1248,11 @@ pub fn exec16(
     }
     // PUSH / POP
     if o & 0xFE00 == 0xB400 {
+        // v3 fusion: (PUSH, LDRlit) save-then-constant (dfu memcpy loop).
+        // PUSH never branches, so the fallthrough is the only path.
+        if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
+            return fused_push_lit(cpu, sys, mem, o, q, pc);
+        }
         let list = o & 0xFF;
         let nl = list.count_ones() + if o & 0x100 != 0 { 1 } else { 0 };
         let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
@@ -1012,6 +1270,11 @@ pub fn exec16(
         return 1;
     }
     if o & 0xFE00 == 0xBC00 {
+        // v3 fusion: (POP-noPC, LSL-imm). Guard proves R == 0 (no return
+        // branch), so the fallthrough is the only path.
+        if cpu.it_n == 0 && (o & 0x100) == 0 && (q & 0xF800) == 0x0000 && q != 0 && fusion_live() {
+            return fused_pop_lsl(cpu, sys, mem, o, q, pc);
+        }
         let list = o & 0xFF;
         let topc = o & 0x100 != 0;
         let mut sp = cpu.regs.r[13];
@@ -1041,6 +1304,10 @@ pub fn exec16(
         return 1;
     }
     if o & 0xF800 == 0x3000 {
+        // v3 fusion: (ADDS-imm8, CBZ/CBNZ) bump-then-null-check.
+        if cpu.it_n == 0 && (q & 0xF500) == 0xB100 && fusion_live() {
+            return fused_adds_cbz(cpu, sys, mem, o, q, pc);
+        }
         let rd = ((o >> 8) & 7) as usize;
         let r = add_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 0);
         cpu.regs.r[rd] = r;
@@ -1062,6 +1329,10 @@ pub fn exec16(
         if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {
             return fused_str_lit(cpu, sys, mem, o, q, pc);
         }
+        // v3 fusion: (STR-imm, HI-MOV) spill-then-shuffle (2.3% coremark).
+        if cpu.it_n == 0 && is_himov(q) && fusion_live() {
+            return fused_str_himov(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add(((o >> 6) & 0x1F) * 4);
         mem.write32(addr, rr(cpu, rt, pc));
@@ -1069,6 +1340,10 @@ pub fn exec16(
         return 1;
     }
     if o & 0xF800 == 0x7800 {
+        // v3 fusion: (LDRB, HI-MOV) byte-load-then-shuffle.
+        if cpu.it_n == 0 && is_himov(q) && fusion_live() {
+            return fused_ldrb_himov(cpu, sys, mem, o, q, pc);
+        }
         let (rn, rt) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let addr = rr(cpu, rn, pc).wrapping_add((o >> 6) & 0x1F);
         cpu.regs.r[rt] = mem.read8(addr) as u32;
@@ -1077,6 +1352,10 @@ pub fn exec16(
     }
     // SXTH/SXTB/UXTH/UXTB (B200-B2FF)
     if o & 0xFF00 == 0xB200 {
+        // v3 fusion: (EXTEND, Bcc) unpack-then-loop-test.
+        if cpu.it_n == 0 && is_bcc_shape(q) && fusion_live() {
+            return fused_ext_bcc(cpu, sys, mem, o, q, pc);
+        }
         let (rs, rd) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let v = rr(cpu, rs, pc);
         cpu.regs.r[rd] = match (o >> 6) & 3 {

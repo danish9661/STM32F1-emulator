@@ -766,6 +766,15 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   fuses, e.g. 0x2323). Proof: 19 new differential suites (~125K cases),
   lib 104/104, census + fuzz green. In-binary A/B (v1+v2 on vs off):
   oled +21%, showcase +22%, coremark +4%, dfu +1%, nothing regresses.
+- **Superoperators v3 (follow-up, same sprint)**: 12 more pairs from a
+  temporary execution-weighted census (hot loops, not cold code):
+  (CMP-reg,Bcc), (LDR,BX), (LDRlit,CBZ), (PUSH,LDRlit), (POP,LSL),
+  (HI-MOV,HI-MOV), (STR,HI-MOV), (ADD-hi,Bcc), (HI-MOV,ADDS),
+  (ADDS,CBZ), (LDRB,HI-MOV), (EXTEND,Bcc). Hardened all branch tails
+  (`fused_branch_done`: faulting BX retires 0 with pc2 record, op1
+  advanced — the differential caught a post-fault r15 gap). Proof: 12
+  new suites (~150K cases), lib 116/116, census + fuzz green. In-binary
+  A/B: oled +20%, showcase +19%, coremark +18%, periph +23%, dfu +5%.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

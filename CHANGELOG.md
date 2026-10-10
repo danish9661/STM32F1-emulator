@@ -94,6 +94,26 @@ All notable changes to this project will be documented in this file.
   seeds 1+4 zero divergences. In-binary A/B (v1+v2 on vs off):
   oled +21%, showcase +22%, coremark +4%, dfu +1% — no firmware regresses
   (every ratio below 1.0).
+- Superoperators v3 (12 more pairs, dynamic-census driven): a temporary
+  execution-weighted census (65K high-byte pair counters + temp exports,
+  all removed after measurement) ranked what hot loops REALLY execute —
+  static analysis weights cold code equally and missed these: (CMP-reg,
+  Bcc) 12.5% oled/showcase, (LDR,BX) 12.9%, (LDRlit,CBZ) + (PUSH,LDRlit)
+  + (POP,LSL) 10% each dfu, (HI-MOV,HI-MOV) 2.9% / (STR,HI-MOV) 2.3% /
+  (ADD-hi,Bcc) 2.2% / (HI-MOV,ADDS) + (ADDS,CBZ) + (LDRB,HI-MOV) 2.1% /
+  (EXTEND,Bcc) 1.8% coremark. Branch-first and 32-bit-second pairs stay
+  excluded (static adjacency isn't dynamic sequence; o2n carries one
+  halfword). New tails (HI-MOV, ADDS-imm8, BX/BLX) + hardened ALL branch
+  tails with `fused_branch_done`: a faulting indirect branch (even BX
+  target) now retires count 0 with a pc2 fault record and op1 advanced —
+  bit-identical post-mortem state to the sequential path, instead of
+  crediting 1 and re-executing forever. Proof: 12 new differential
+  suites (~150K pair-cases incl. rd==15 no-fuse guards, EXC_RETURN +
+  even-target BX rows, C/V preservation) + extended IT-fallback —
+  36/36 fused suites green; lib 116/116; census + fuzz green. In-binary
+  A/B (v1+v2+v3 on vs off): oled +20%, showcase +19%, coremark +18%,
+  periph +23%, dfu +5% — coremark's jump (+4% to +18%) is the HI/CMP-reg
+  pairs landing. Nothing regresses.
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

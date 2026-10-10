@@ -834,7 +834,8 @@ fn fused_it_fallback_matches_legacy() {
     // ITE MI (0xBF0C): cmp then bne, first suppressed when N==0.
     // v2 pairs exercise the same it_n == 0 gate in every new first-arm.
     for flags in [0x00000000u32, 0x80000000] {
-        for op_pair in [(0x42A3u16, 0xD101u16), (0x6019u16, 0x6821u16), (0x2001u16, 0xE7FEu16), (0x4802u16, 0x4903u16)] {
+        for op_pair in [(0x42A3u16, 0xD101u16), (0x6019u16, 0x6821u16), (0x2001u16, 0xE7FEu16), (0x4802u16, 0x4903u16),
+            (0x4283u16, 0xD101u16), (0xB214u16, 0xD101u16), (0xB508u16, 0x4903u16), (0xBD08u16, 0x0000u16), (0x4621u16, 0x4628u16)] {
             let mut out = Vec::new();
             for fused in [true, false] {
                 super::thumb::fusion_off(!fused);
@@ -851,6 +852,8 @@ fn fused_it_fallback_matches_legacy() {
                 cpu.regs.r[1] = 0xAB;
                 cpu.regs.r[3] = 0x20003000;
                 cpu.regs.r[4] = 0x20003010;
+                cpu.regs.r[8] = 0x20003020;
+                cpu.regs.r[9] = 7;
                 cpu.regs.xpsr = (cpu.regs.xpsr & !0xF0000000) | (flags & 0xF0000000);
                 cpu.regs.r[15] = 0x20002001;
                 cpu.run(sys, &mut mem, 8);
@@ -1224,4 +1227,269 @@ fn fused2_subsi_cmp_matches_legacy() {
         } }
     } } }
     assert!(n == 4096);
+}
+
+// ---- Superoperator v3 differential (dynamic-census driven) ----
+fn op_himov(rd: usize, rs: usize) -> u16 {
+    0x4600 | (((rs & 15) as u16) << 3) | ((rd & 7) as u16) | ((((rd >> 3) & 1) as u16) << 7)
+}
+fn op_hiadd(rd: usize, rs: usize) -> u16 {
+    0x4400 | (((rs & 15) as u16) << 3) | ((rd & 7) as u16) | ((((rd >> 3) & 1) as u16) << 7)
+}
+fn op_bx(rs: usize, blx: bool) -> u16 {
+    0x4700 | (((rs & 15) as u16) << 3) | if blx { 0x80 } else { 0 }
+}
+fn op_push(list9: u32) -> u16 {
+    0xB400 | ((list9 & 0x1FF) as u16)
+}
+fn op_pop(list8: u32) -> u16 {
+    0xBC00 | ((list8 & 0xFF) as u16)
+}
+fn op_adds(rd: usize, imm: u32) -> u16 {
+    0x3000 | (((rd & 7) as u16) << 8) | ((imm & 0xFF) as u16)
+}
+fn op_ext(rd: usize, rs: usize, extop: u32) -> u16 {
+    0xB200 | (((extop & 3) as u16) << 6) | (((rs & 7) as u16) << 3) | ((rd & 7) as u16)
+}
+fn op_cmpr(rd: usize, rs: usize) -> u16 {
+    0x4000 | (10u16 << 6) | (((rs & 7) as u16) << 3) | ((rd & 7) as u16)
+}
+fn op_ldrb(rn: usize, rt: usize, imm5: u32) -> u16 {
+    0x7800 | (((imm5 & 31) as u16) << 6) | (((rn & 7) as u16) << 3) | ((rt & 7) as u16)
+}
+
+#[test]
+fn fused3_cmpr_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rs in 0..8 { for rd in 0..8 {
+        for cc in 0..16 {
+            for taken_case in [false, true] {
+                for &flags in &[0u32, 0xF0000000] {
+                    let off: i32 = if taken_case { -4 } else { 100 };
+                    let (a, b) = run_pair_both(sys, op_cmpr(rd, rs), op_bcc(cc, off), &[], flags, 0x7000 + n);
+                    assert!(snap_eq(&a, &b), "fused/legacy diverge for cmpr-bcc cc={}", cc);
+                    if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                    n += 1;
+                }
+            }
+        }
+    } }
+    assert!(taken > 100 && untaken > 100);
+    assert!(n == 4096);
+}
+
+#[test]
+fn fused3_himov_himov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    // Full 0-15 cubes: rd == 15 firsts must NOT fuse (branch), and the
+    // differential proves the guard by executing both modes identically.
+    for rd1 in 0..16 { for rs1 in 0..16 {
+        for rd2 in 0..16 { for rs2 in 0..16 {
+            check_pair(sys, op_himov(rd1, rs1), op_himov(rd2, rs2), &[], 0, 0x7100 + (n & 0xFFFFFF), "himov-himov");
+            n += 1;
+        } }
+    } }
+    assert!(n == 65536);
+}
+
+#[test]
+fn fused3_str_himov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rd2 in 0..16 { for rs2 in [0, 1, 2, 3, 4, 5, 6, 7, 15] {
+            check_pair(sys, op_str(rn1, rt1, i5), op_himov(rd2, rs2), &[scratch(rn1)], 0, 0x7200 + (n & 0xFFFFFF), "str-himov");
+            n += 1;
+        } }
+    } } }
+    assert!(n == 18432);
+}
+
+#[test]
+fn fused3_himov_adds_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rd1 in 0..16 { for rs1 in 0..16 {
+        for rd2 in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+            for &flags in &[0u32, 0xF0000000] {
+                check_pair(sys, op_himov(rd1, rs1), op_adds(rd2, imm), &[], flags, 0x7300 + (n & 0xFFFFFF), "himov-adds");
+                n += 1;
+            }
+        } }
+    } }
+    assert!(n == 16384);
+}
+
+#[test]
+fn fused3_push_lit_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for &list in &[0u32, 0x008, 0x038, 0x0F0, 0x0FF] {
+        for &lr in &[0u32, 0x100] {
+            for rt2 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+                check_pair(sys, op_push(list | lr), op_lit(rt2, imm8), &[], 0, 0x7400 + n, "push-lit");
+                n += 1;
+            } }
+        }
+    }
+    assert!(n == 320);
+}
+
+#[test]
+fn fused3_pop_lsl_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for &list in &[0u32, 0x08, 0x38, 0xF0, 0xFF] {
+        for rd2 in 0..8 { for rs2 in 0..8 { for &j5 in &[0u32, 31] {
+            for &flags in &[0u32, 0x20000000] {
+                check_pair(sys, op_pop(list), op_lsl(rd2, rs2, j5), &[], flags, 0x7500 + n, "pop-lsl");
+                n += 1;
+            }
+        } } }
+    }
+    assert!(n == 1280);
+}
+
+#[test]
+fn fused3_ldri_bx_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rs2 in 0..16 { for blx in [false, true] {
+            // Skip rt1 == rs2: the load clobbers the branch target with a
+            // scratch-RAM word, so post-branch wandering can't converge
+            // under fixed steps (same harness rationale as above). The
+            // overlap ordering itself is sequential-verbatim by
+            // construction (load completes before the BX reads Rs).
+            if rt1 == rs2 {
+                continue;
+            }
+            // BX targets park in the b-self landing (spins convergently);
+            // random-reg targets would wander pattern with different fused/
+            // legacy step counts (harness artifact, not engine semantics).
+            // EXC_RETURN + even-target shapes get explicit rows below.
+            check_pair(sys, op_ldri(rn1, rt1, i5), op_bx(rs2, blx), &[scratch(rn1), (rs2, 0x20002005)], 0, 0x7600 + (n & 0xFFFFFF), "ldri-bx");
+            n += 1;
+        } }
+    } } }
+    assert!(n == 3840);
+    // EXC_RETURN reshapes + even-target faults retire exactly (count 0,
+    // pc2 fault record) on both paths.
+    for &lr in &[0xFFFFFFF9u32, 0xFFFFFFFDu32] {
+        check_pair(sys, op_ldri(0, 1, 0), op_bx(14, false), &[scratch(0), (14, lr)], 0, 0x76E0, "ldri-bx-exc");
+    }
+    check_pair(sys, op_ldri(0, 1, 0), op_bx(2, false), &[scratch(0), (2, 0x20002000)], 0, 0x76E1, "ldri-bx-even");
+}
+
+#[test]
+fn fused3_lit_cbz_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rt1 in 0..8 { for &imm8 in &[0u32, 1, 2, 3] {
+        for rn2 in 0..8 { for cbnz in [false, true] {
+            for &rv in &[0u32, 5] {
+                check_pair(sys, op_lit(rt1, imm8), op_cbz(rn2, cbnz), &[(rn2, rv)], 0, 0x7700 + n, "lit-cbz");
+                n += 1;
+            }
+        } }
+    } }
+    assert!(n == 1024);
+}
+
+#[test]
+fn fused3_adds_cbz_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for rd in 0..8 { for &imm in &[0u32, 1, 127, 255] {
+        for rn2 in 0..8 { for cbnz in [false, true] {
+            for &rv in &[0u32, 5] {
+                check_pair(sys, op_adds(rd, imm), op_cbz(rn2, cbnz), &[(rn2, rv)], 0, 0x7800 + n, "adds-cbz");
+                n += 1;
+            }
+        } }
+    } }
+    assert!(n == 1024);
+}
+
+#[test]
+fn fused3_ldrb_himov_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for rn1 in 0..8 { for rt1 in 0..8 { for &i5 in &[0u32, 31] {
+        for rd2 in 0..16 { for rs2 in [0, 1, 2, 3, 4, 5, 6, 7, 15] {
+            check_pair(sys, op_ldrb(rn1, rt1, i5), op_himov(rd2, rs2), &[scratch(rn1)], 0, 0x7900 + (n & 0xFFFFFF), "ldrb-himov");
+            n += 1;
+        } }
+    } } }
+    assert!(n == 18432);
+}
+
+#[test]
+fn fused3_hiadd_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rd1 in 0..16 { for rs1 in 0..16 {
+        for cc in 0..16 {
+            for taken_case in [false, true] {
+                let off: i32 = if taken_case { -4 } else { 100 };
+                let (a, b) = run_pair_both(sys, op_hiadd(rd1, rs1), op_bcc(cc, off), &[], 0, 0x7A00 + (n & 0xFFFFFF));
+                assert!(snap_eq(&a, &b), "fused/legacy diverge for hiadd-bcc cc={}", cc);
+                if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                n += 1;
+            }
+        }
+    } }
+    assert!(taken > 100 && untaken > 100);
+    assert!(n == 8192);
+}
+
+#[test]
+fn fused3_ext_bcc_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rs in 0..8 { for rd in 0..8 { for extop in 0..4 {
+        for cc in 0..16 {
+            for taken_case in [false, true] {
+                let off: i32 = if taken_case { -4 } else { 100 };
+                let (a, b) = run_pair_both(sys, op_ext(rd, rs, extop), op_bcc(cc, off), &[], 0, 0x7B00 + (n & 0xFFFFFF));
+                assert!(snap_eq(&a, &b), "fused/legacy diverge for ext-bcc cc={}", cc);
+                if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                n += 1;
+            }
+        }
+    } } }
+    assert!(taken > 100 && untaken > 100);
+    assert!(n == 8192);
 }
