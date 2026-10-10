@@ -173,6 +173,12 @@ All notable changes to this project will be documented in this file.
   shows ≤0. (Whole-loop fusion was rejected first: the "10-op loop" is
   leaf helpers with internal exits + 32-bit RMW + calls — trace-JIT
   territory.)
+- fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
+  STR skipping the table load): native per-op micro-benchmark -2–20%
+  (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly
+  1.000); wasm firmware-level unresolvable under a competing sweep —
+  kept on the same standard (native directional + 65K-exhaustive safety
+  + full gates), revert trigger if a quiet A/B ever shows ≤0.
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured

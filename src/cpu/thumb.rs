@@ -1170,7 +1170,10 @@ fn optable() -> &'static [u8; 65536] {
 /// chain-top arms beat a table load + jump on tight loops. Returns None
 /// when the table must serve the opcode. Proven equal to classify16 by
 /// the exhaustive fast_tag_matches_classify test below — the SVC/UDF
-/// exclusion mirrors chain order (DF00/DE00 precede Bcc).
+/// exclusion mirrors chain order (DF00/DE00 precede Bcc). Second wave:
+/// LSL/MOV/B/CBZ/PUSH/POP/STR firsts are all hot somewhere (periph spin
+/// loop, dfu memcpy loop, loop back-edges); shapes verified disjoint
+/// from earlier guards (the exhaustive test proves it).
 pub(crate) fn fast_tag(o: u32) -> Option<u8> {
     if o & 0xFC00 == 0x4400 {
         Some(ARM_HI_BX)
@@ -1182,6 +1185,20 @@ pub(crate) fn fast_tag(o: u32) -> Option<u8> {
         Some(ARM_LDRI)
     } else if o & 0xFC00 == 0x4000 {
         Some(ARM_ALU)
+    } else if o & 0xF800 == 0x0000  {
+        Some(ARM_LSL)
+    } else if o & 0xF800 == 0x2000  {
+        Some(ARM_MOV_IMM)
+    } else if o & 0xF800 == 0xE000  {
+        Some(ARM_B)
+    } else if o & 0xF500 == 0xB100  {
+        Some(ARM_CBZ)
+    } else if o & 0xFE00 == 0xB400  {
+        Some(ARM_PUSH)
+    } else if o & 0xFE00 == 0xBC00  {
+        Some(ARM_POP)
+    } else if o & 0xF800 == 0x6000  {
+        Some(ARM_STR)
     } else {
         None
     }

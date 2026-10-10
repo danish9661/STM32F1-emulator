@@ -794,6 +794,10 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   shared `ldm_stm_body` + exact-shape hoists. Native per-op +7–8%;
   wasm firmware-level below box resolution — kept on per-op proof +
   safety with revert trigger. lib 123/123, all gates green.
+- **fast_tag second wave**: 7 more hot first-ops (LSL/MOV/B/CBZ/PUSH/
+  POP/STR) skipping the table load. Native per-op -2–20% (controls
+  exactly 1.000); wasm below box resolution — same keep-standard as
+  hoists, with revert trigger. Exhaustive 65K proof + all gates green.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —
