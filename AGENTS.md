@@ -780,6 +780,11 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   halfwords dropped on evidence (~2 static). No separate measurable
   delta (box noise) — kept on safety proof + pair weight. 40/40 fused,
   lib 120/120, all gates green.
+- **Phase 0 attribution (100-MIPS floor)**: peripheral model single-digits
+  (MEMFREE in-binary A/B: dfu +2%, coremark +4%, control ±2–8%); dfu
+  dispatch ~20–25% via fusion response ⇒ decode-table alone caps ~+25%
+  on dfu — Phase 2 mandatory, Phase 1 justified for periph-likes. Batch
+  sweep: 20K≡100K, 500K breaks 2 checks ⇒ stepping ~0%, 20K stays.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

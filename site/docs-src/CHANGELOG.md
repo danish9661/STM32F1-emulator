@@ -125,6 +125,21 @@ All notable changes to this project will be documented in this file.
   proof-of-safety (4 new differential suites, 40/40 fused green) +
   measured pair weight, not on a resolution-limited ratio. Proof: lib
   120/120; census + fuzz green; all behavior gates green.
+- Phase 0 attribution (100-MIPS-floor project): in-binary MEMFREE stub at
+  the peripheral-model handoff (all widths funnel through
+  `Peripherals::read/write`; an early byte-level stub missed the wide
+  fast paths and measured nothing — caught by a behavioral check,
+  restubbed at the choke point). dfu +2.1%, coremark +3.7% vs a
+  same-vs-same control at 0.915–0.982: the peripheral model is
+  single-digits on these mixes (stubbing also perturbs firmware liveness
+  — oled inverted via timeout/retry paths — so this bounds, not
+  isolates). Fusion-response inference puts dfu dispatch at ~20–25%
+  (~40% of executed pairs fused for +5.4%; a dispatch-dominated workload
+  would show 25%+): **dispatch <40% on dfu, so a decode rewrite alone
+  caps ~+25–30% there (73.5 → ~92 max) and Phase 2 is mandatory for the
+  floor**. Batch-size sweep: 20K vs 100K batches identical at 39/39
+  (3.30 vs 3.31s), 500K breaks 2 checks — per-batch stepping costs ~0%,
+  20K stays. Remainder is op bodies + loop scaffolding (~70%+).
 - Toolchain (zero source risk, same determinism story): wasm-opt `-O3`
   via `[package.metadata.wasm-pack.profile.release]` (+4-11% over the
   default `-O`: spixfer +4%, showcase +6%, compute +12%, measured
