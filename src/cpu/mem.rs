@@ -79,6 +79,19 @@ impl FlatMemory {
     fn in_ram(&self, addr: u32) -> bool {
         addr >= self.ram_base && (addr - self.ram_base) < self.ram.len() as u32
     }
+
+    /// Contiguous-RAM range check for bulk multi-transfer fast paths: the
+    /// whole [base, base+4*nwords) must sit in the single RAM vec with no
+    /// wraparound (then every word hits the plain-vec path — no per-word
+    /// region/MPU/watch/peripheral gates needed; callers still gate those
+    /// once up front and take the legacy loop otherwise).
+    pub(crate) fn ram_range_ok(&self, base: u32, nwords: u32) -> bool {
+        if nwords == 0 {
+            return false;
+        }
+        let last = base.wrapping_add((nwords - 1) * 4);
+        last >= base && self.in_ram(base) && self.in_ram(last.wrapping_add(3))
+    }
     fn extra_idx(&self, addr: u32) -> Option<usize> {
         self.extra
             .iter()

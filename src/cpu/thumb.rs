@@ -286,6 +286,32 @@ pub(crate) fn hoist_off(on: bool) {
     HOIST_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Bulk-transfer kill-switch (same differential role): when set, the
+/// multi-word fast paths take the legacy per-word loop. Checked in the
+/// bulk guards (cold path only — the guard itself runs either way).
+static BULK_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn bulk_off(on: bool) {
+    BULK_OFF.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn bulk_live() -> bool {
+    !BULK_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Shared bulk gate: MPU off (no per-word data checks possible) AND no
+/// watchpoints armed (no per-word watch checks) AND the whole transfer in
+/// contiguous RAM AND the differential switch allows it. Anything else
+/// takes the legacy per-word loop with identical semantics.
+#[inline(always)]
+fn bulk_ok(mem: &FlatMemory, base: u32, nwords: u32) -> bool {
+    !crate::system::mpu_gate_on()
+        && !crate::system::watch_on()
+        && bulk_live()
+        && mem.ram_range_ok(base, nwords)
+}
+
 #[inline(always)]
 fn hoist_live() -> bool {
     !HOIST_OFF.load(std::sync::atomic::Ordering::Relaxed)
@@ -1608,6 +1634,35 @@ pub fn exec16(
             let nl = list.count_ones() + if o & 0x100 != 0 { 1 } else { 0 };
             let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
             cpu.regs.r[13] = sp;
+            // Bulk fast path (same gating as ldm_stm_body): raw stores in
+            // order; the legacy loop below stays byte-intact as fallback.
+            if bulk_ok(mem, sp, nl) {
+                let base = (sp - mem.ram_base) as usize;
+                let mut wo = base;
+                for i in 0..8 {
+                    if (list >> i) & 1 == 1 {
+                        let b = cpu.regs.r[i as usize].to_le_bytes();
+                        unsafe {
+                            *mem.ram.get_unchecked_mut(wo) = b[0];
+                            *mem.ram.get_unchecked_mut(wo + 1) = b[1];
+                            *mem.ram.get_unchecked_mut(wo + 2) = b[2];
+                            *mem.ram.get_unchecked_mut(wo + 3) = b[3];
+                        }
+                        wo += 4;
+                    }
+                }
+                if o & 0x100 != 0 {
+                    let b = cpu.regs.r[14].to_le_bytes();
+                    unsafe {
+                        *mem.ram.get_unchecked_mut(wo) = b[0];
+                        *mem.ram.get_unchecked_mut(wo + 1) = b[1];
+                        *mem.ram.get_unchecked_mut(wo + 2) = b[2];
+                        *mem.ram.get_unchecked_mut(wo + 3) = b[3];
+                    }
+                }
+                adv(cpu, pc, 2);
+                return 1;
+            }
             for i in 0..8 {
                 if (list >> i) & 1 == 1 {
                     mem.write32(sp, cpu.regs.r[i as usize]);
@@ -1629,15 +1684,49 @@ pub fn exec16(
             let list = o & 0xFF;
             let topc = o & 0x100 != 0;
             let mut sp = cpu.regs.r[13];
-            for i in 0..8 {
-                if (list >> i) & 1 == 1 {
-                    cpu.regs.r[i as usize] = mem.read32(sp);
-                    sp += 4;
+            let nl = list.count_ones() + if topc { 1 } else { 0 };
+            // Bulk fast path (same gating): raw loads in order + pc-load
+            // capture; writeback/branch below shared. Legacy verbatim.
+            let mut newpc: Option<u32> = None;
+            if bulk_ok(mem, sp, nl) {
+                let base = (sp - mem.ram_base) as usize;
+                let mut wo = base;
+                for i in 0..8 {
+                    if (list >> i) & 1 == 1 {
+                        let v = u32::from_le_bytes([
+                            unsafe { *mem.ram.get_unchecked(wo) },
+                            unsafe { *mem.ram.get_unchecked(wo + 1) },
+                            unsafe { *mem.ram.get_unchecked(wo + 2) },
+                            unsafe { *mem.ram.get_unchecked(wo + 3) },
+                        ]);
+                        cpu.regs.r[i as usize] = v;
+                        wo += 4;
+                        sp += 4;
+                    }
+                }
+                if topc {
+                    let v = u32::from_le_bytes([
+                        unsafe { *mem.ram.get_unchecked(wo) },
+                        unsafe { *mem.ram.get_unchecked(wo + 1) },
+                        unsafe { *mem.ram.get_unchecked(wo + 2) },
+                        unsafe { *mem.ram.get_unchecked(wo + 3) },
+                    ]);
+                    newpc = Some(v);
+                }
+            } else {
+                for i in 0..8 {
+                    if (list >> i) & 1 == 1 {
+                        cpu.regs.r[i as usize] = mem.read32(sp);
+                        sp += 4;
+                    }
+                }
+                if topc {
+                    let t = mem.read32(sp);
+                    newpc = Some(t);
                 }
             }
             cpu.regs.r[13] = sp.wrapping_add(if topc { 4 } else { 0 });
-            if topc {
-                let t = mem.read32(sp);
+            if let Some(t) = newpc {
                 return branch(cpu, sys, mem, t, pc, op, 0, 2);
             }
             adv(cpu, pc, 2);
@@ -2156,23 +2245,63 @@ fn ldm_stm_body(
     a = a.wrapping_sub(n * 4);
     }
     let mut newpc: Option<u32> = None;
-    for i in 0..16 {
-    if (list >> i) & 1 == 1 {
-    if l {
-    let v = mem.read32(a);
-    if i == 15 {
-    newpc = Some(v);
+    if bulk_ok(mem, a, n) {
+        // Bulk fast path: whole transfer in contiguous RAM, MPU off, no
+        // watchpoints — one range check above replaces per-word
+        // region/MPU/watch/peripheral gates. Order, values, writeback and
+        // branching below are shared (only the per-word accessors differ
+        // from the legacy loop). Offsets are unchecked: ram_range_ok
+        // proves base..base+4n-1 inside the single RAM vec (same
+        // containment argument as fetch32_raw/mem read/write paths).
+        let base = (a - mem.ram_base) as usize;
+        let mut o = base;
+        for i in 0..16 {
+            if (list >> i) & 1 == 1 {
+                if l {
+                    let v = u32::from_le_bytes([
+                        unsafe { *mem.ram.get_unchecked(o) },
+                        unsafe { *mem.ram.get_unchecked(o + 1) },
+                        unsafe { *mem.ram.get_unchecked(o + 2) },
+                        unsafe { *mem.ram.get_unchecked(o + 3) },
+                    ]);
+                    if i == 15 {
+                        newpc = Some(v);
+                    } else {
+                        cpu.regs.r[i as usize] = v;
+                    }
+                } else {
+                    let v = if i == 15 { (pc + 4) & !3 } else { cpu.regs.r[i as usize] };
+                    let b = v.to_le_bytes();
+                    unsafe {
+                        *mem.ram.get_unchecked_mut(o) = b[0];
+                        *mem.ram.get_unchecked_mut(o + 1) = b[1];
+                        *mem.ram.get_unchecked_mut(o + 2) = b[2];
+                        *mem.ram.get_unchecked_mut(o + 3) = b[3];
+                    }
+                }
+                o += 4;
+                a += 4;
+            }
+        }
     } else {
-    // (If Rn itself is in a writeback list the
-    // loaded value wins; firmware never does this.)
-    cpu.regs.r[i as usize] = v;
-    }
-    } else {
-    let v = if i == 15 { (pc + 4) & !3 } else { cpu.regs.r[i as usize] };
-    mem.write32(a, v);
-    }
-    a += 4;
-    }
+        for i in 0..16 {
+            if (list >> i) & 1 == 1 {
+                if l {
+                    let v = mem.read32(a);
+                    if i == 15 {
+                        newpc = Some(v);
+                    } else {
+                        // (If Rn itself is in a writeback list the
+                        // loaded value wins; firmware never does this.)
+                        cpu.regs.r[i as usize] = v;
+                    }
+                } else {
+                    let v = if i == 15 { (pc + 4) & !3 } else { cpu.regs.r[i as usize] };
+                    mem.write32(a, v);
+                }
+                a += 4;
+            }
+        }
     }
     // Writeback: incrementing modes (IA/IB) end at the final
     // address; decrementing modes (DA/DB) write back the START

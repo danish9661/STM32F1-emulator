@@ -192,6 +192,15 @@ All notable changes to this project will be documented in this file.
   the legacy F800 path is long (class match + addressing + literal/PLD
   checks) vs 3 compares + direct body. Differential suite (512
   pair-cases + exclusion rows) + full gates green.
+- Bulk multi-transfer fast paths (push.w/pop.w T3 + PUSH/POP T1): one
+  `ram_range_ok` contiguous-RAM proof + one MPU/watch gate replaces all
+  per-word gates; words move raw (`get_unchecked`, same containment
+  argument as fetch32), order/values/writeback/branch shared with the
+  legacy loop (kept verbatim for MPU/watch fallbacks, preserving
+  partial-fault semantics). Native per-op (temp, removed): push.w −55%,
+  pop.w −35%, PUSH −70%, POP −73%. Differential: T3 cubes ride the
+  hoist suites; new 16-bit cubes place SP inside the hashed window.
+  lib 129/129 + full gates green. Kept on per-op proof + safety.
 - fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
   STR skipping the table load): native per-op micro-benchmark -2–20%
   (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly

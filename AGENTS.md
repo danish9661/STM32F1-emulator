@@ -833,6 +833,17 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   confirms the FreeRTOS wedge stays fixed — it was vestigial overhead
   (2 branches + store per op). Kept: strictly non-negative (periph
   exactly flat across 21 reps).
+- **Bulk multi-transfer fast paths** (the dfu-floor lever hiding in op
+  bodies, not dispatch): push.w/pop.w (T3) + PUSH/POP (T1) now resolve
+  once + gate MPU/watch once, then move words raw — one range check
+  replaces per-word region/MPU/watch/peripheral gates
+  (`ram_range_ok` proves contiguous-RAM containment; MPU/watch fall
+  back to the verbatim legacy loop, preserving partial-fault
+  semantics). Native per-op micro-benchmark (temp, removed): push.w
+  −55%, pop.w −35%, PUSH −70%, POP −73%. Differential suites
+  (T3 cubes ride the hoist suites; new 16-bit cubes with SP inside the
+  hashed window so stored words compare) + full gates green. Kept on
+  per-op proof + safety with revert trigger. lib 129/129.
 - **IRQ throttle REVERTED**: polling every 8th op measured −14% on dfu
   (tight band 1.128–1.141 — code-shape perturbation of the hot loop
   swamps the saved borrow). Same-day rule applied; tree restored

@@ -663,6 +663,7 @@ fn run_pair_both(
     for fused in [true, false] {
         super::thumb::fusion_off(!fused);
         super::thumb::hoist_off(!fused);
+        super::thumb::bulk_off(!fused);
         let mut cpu = Cpu::new(0x20008000, 0x20002001);
         cpu.dsp = false;
         cpu.deliver_irqs = false;
@@ -695,6 +696,7 @@ fn run_pair_both(
     }
     super::thumb::fusion_off(false);
     super::thumb::hoist_off(false);
+    super::thumb::bulk_off(false);
     (out.remove(0), out.remove(0))
 }
 
@@ -842,6 +844,8 @@ fn fused_it_fallback_matches_legacy() {
             let mut out = Vec::new();
             for fused in [true, false] {
                 super::thumb::fusion_off(!fused);
+                super::thumb::hoist_off(!fused);
+                super::thumb::bulk_off(!fused);
                 let mut cpu = Cpu::new(0x20008000, 0x20002001);
                 cpu.dsp = false;
                 cpu.deliver_irqs = false;
@@ -863,6 +867,8 @@ fn fused_it_fallback_matches_legacy() {
                 out.push(snap_of(&cpu, &mem));
             }
             super::thumb::fusion_off(false);
+            super::thumb::hoist_off(false);
+            super::thumb::bulk_off(false);
             assert!(snap_eq(&out[0], &out[1]), "IT fallback diverges at flags {:08x}", flags);
         }
     }
@@ -1716,5 +1722,57 @@ fn hoist_f8word_matches_legacy() {
         check_pair(sys, o1, 0x0000, &[scratch(7)], 0, 0xB100, "f8word-rn15");
         check_pair(sys, 0xF8C0 | 0x0007, 0xF000, &[scratch(7)], 0, 0xB101, "f8word-rt15");
     }
+}
+
+
+// ---- Bulk-transfer differential: 16-bit PUSH/POP fast path vs legacy ----
+// SP is placed inside the snap-hashed RAM window (0x20003000-100) so stored
+// words are compared, not just regs/flags. T3 push/pop bulk rides the
+// existing hoist_pushw/popw suites (bulk toggles with everything else).
+
+fn op_push16(list9: u32) -> u16 {
+    0xB400 | ((list9 & 0x1FF) as u16)
+}
+fn op_pop16(list9: u32) -> u16 {
+    0xBC00 | ((list9 & 0x1FF) as u16)
+}
+fn op_nop() -> u16 {
+    0xBF00
+}
+
+#[test]
+fn bulk_push16_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &list in &[0u32, 0x008, 0x038, 0x0F0, 0x0FF] {
+        for &lr in &[0u32, 0x100] {
+            for &sp in &[0x200030C0u32, 0x20003080] {
+                for s in 0..8 {
+                    check_pair(sys, op_push16(list | lr), op_nop(), &[(13, sp)], 0, 0xC000 + (n & 0xFFFF) + s, "bulk-push16");
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert!(n == 160);
+}
+
+#[test]
+fn bulk_pop16_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    for &list in &[0u32, 0x08, 0x38, 0xF0, 0xFF, 0x108, 0x1FF] {
+        for &sp in &[0x200030C0u32, 0x20003080] {
+            for s in 0..8 {
+                check_pair(sys, op_pop16(list), op_nop(), &[(13, sp)], 0, 0xC100 + (n & 0xFFFF) + s, "bulk-pop16");
+                n += 1;
+            }
+        }
+    }
+    assert!(n == 112);
 }
 
