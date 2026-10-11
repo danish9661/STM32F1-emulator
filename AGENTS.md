@@ -794,8 +794,11 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   sweep: 20K≡100K, 500K breaks 2 checks ⇒ stepping ~0%, 20K stays.
   Driven-DFU census (temp counters, since removed): rotation persists
   under enumeration+DNLOAD plus a T3-ALU-imm/F8-transfer second tier
-  (~3%×4); leftovers live in exec32's intricate blocks — classify32
-  scoped, not started.
+  (~3%×4); a full classify32 table is REJECTED (4B keyspace kills
+  exhaustive proof, and per-family guards land in the same mazes). T3-imm/T3-reg hoists SKIPPED after mapping (both
+  blocks are fault-arm mazes: op/rn/rd/s validity at every level — a
+  hoist guard would duplicate ~80% of the body; EV only +1–3% for real
+  mis-decode risk). Same for F8-misc and the (EB,06) T3-reg cell.
 - **Phase 1 decode table**: 40-arm chain → classify + 64KB table +
   br_table executor (bodies verbatim, no invalidation needed); top-5
   fast-path tags (65K-exhaustive proof) + unchecked load. A/B: oled
