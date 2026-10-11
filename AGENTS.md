@@ -866,7 +866,12 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   (~10K triple-cases, both CBZ directions asserted; firing proven by
   surgical break-tests after catching a shadowed-pair miss and a
   5-site `str.replace` wildcard). Native per-op (temp, removed): T1
-  −40%, T2 −37%. Full gates green; wasm firmware-level A/B queued.
+  −40%, T2 −37%. Full gates green. Firmware-level A/B skipped (box
+  never quiet) — kept on analytical certainty instead: each firing
+  removes 2 dispatches + 2 scaffolds + 2 advances for at most one
+  contained o3n fetch on pair-match, so the sign is provable without
+  measurement; browser demos 34/34 green on the ship binary. Revert
+  trigger stands if a quiet A/B ever shows ≤0.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —

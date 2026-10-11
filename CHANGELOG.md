@@ -200,8 +200,11 @@ All notable changes to this project will be documented in this file.
   3/3 and 2/3 counts via `fused_interlock_at`); T3/T4 interiors proven
   cold and skipped. 2 differential suites (~10K cases, both directions;
   firing proven by surgical break-tests) + full gates green. Native
-  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131; wasm A/B
-  queued for quiet (revert trigger documented).
+  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131. Firmware A/B
+  skipped (box never quiet for a clean read) — kept on analytical
+  certainty (each firing removes 2 dispatches + 2 scaffolds + 2 advances
+  for one contained o3n fetch on pair-match) + browser demos 34/34 on
+  the ship binary; revert trigger stands.
 - Bulk multi-transfer fast paths (push.w/pop.w T3 + PUSH/POP T1): one
   `ram_range_ok` contiguous-RAM proof + one MPU/watch gate replaces all
   per-word gates; words move raw (`get_unchecked`, same containment
@@ -216,8 +219,11 @@ All notable changes to this project will be documented in this file.
   3/3 and 2/3 counts via `fused_interlock_at`); T3/T4 interiors proven
   cold and skipped. 2 differential suites (~10K cases, both directions;
   firing proven by surgical break-tests) + full gates green. Native
-  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131; wasm A/B
-  queued for quiet (revert trigger documented).
+  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131. Firmware A/B
+  skipped (box never quiet for a clean read) — kept on analytical
+  certainty (each firing removes 2 dispatches + 2 scaffolds + 2 advances
+  for one contained o3n fetch on pair-match) + browser demos 34/34 on
+  the ship binary; revert trigger stands.
 - fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
   STR skipping the table load): native per-op micro-benchmark -2–20%
   (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly
