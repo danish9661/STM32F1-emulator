@@ -754,7 +754,13 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   every wasm-affecting edit, `cargo clean -p stm32-bluepill-wasm` +
   rebuild and require the md5 to CHANGE vs pre-edit; identical md5 with
   changed source means a stale build, full stop. Record md5 + tree-state
-  for every measurement binary.
+  for every measurement binary. Hardening (same day): require the
+  literal `Compiling stm32-bluepill-wasm` line in build output (a bare
+  `Finished` in <1s is a no-op — and `clean -p` itself can report
+  `Removed 0 files` while stale artifacts persist); the md5-change
+  check is the only signal that counts, and a confused reading of it
+  once sent a whole turn chasing a phantom source/binary mismatch that
+  never shipped.
 - **Superoperators v1 (follow-up, same sprint)**: 4 fused 16-bit pairs
   (LDRlit+LDR, SUBreg+CMP-reg, CMP-imm+Bcc, LSL-imm+Bcc) via an `o2n`
   lookahead; shape-only guards inside the first arm (`it_n==0` fallback,
