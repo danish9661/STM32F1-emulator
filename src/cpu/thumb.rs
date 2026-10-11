@@ -2299,6 +2299,23 @@ pub fn exec32(
         if o1 == 0xE8BD && (o2 >> 8) == 0x81 && hoist_live() {
             return ldm_stm_body(cpu, sys, mem, o1, o2, pc, op1, op2, (o1 & 0xF) as usize);
         }
+        // F8 T2-imm12 word transfers (ldr.w/str.w, c 12/13): the other
+        // dfu-rotation family behind the F800 block's class/addressing
+        // maze. Guard is the exact valid subfamily — c from a single mask
+        // ((o1&0xFFC0)==0xF8C0), Rn/Rt != 15 (else the literal/PLD/branch
+        // paths, which stay legacy). Body verbatim for word/unsigned.
+        if (o1 & 0xFFC0) == 0xF8C0 && (o1 & 0xF) != 15 && ((o2 >> 12) & 0xF) != 15 && hoist_live() {
+            let rn = (o1 & 0xF) as usize;
+            let rt = ((o2 >> 12) & 0xF) as usize;
+            let addr = rr(cpu, rn, pc).wrapping_add(o2 & 0xFFF);
+            if (o1 & 0x10) != 0 {
+                cpu.regs.r[rt] = mem.read32(addr);
+            } else {
+                mem.write32(addr, rr(cpu, rt, pc));
+            }
+            adv(cpu, pc, 4);
+            return 1;
+        }
         // USAT / SSAT (saturate). Shares hw1 with MSR (0xF380|Rn) but o2[15]
         // is always 0 here (imm5 lives in o2[14:10]); MSR needs o2>=0x8800,
         // so the two are disjoint. GAS-verified: usat=F380, ssat=F300/F322.

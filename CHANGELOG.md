@@ -186,6 +186,12 @@ All notable changes to this project will be documented in this file.
   landings + cc==0xF fault rows + EXC/even BX-style rows for BL) +
   mrs probes (the exclusion proof) + full gates green. In-binary A/B:
   dfu +9.2%, showcase +10.3%, coremark +1.9%, periph 1.000.
+- F8 T2-imm12 word hoist (ldr.w/str.w via one `(o1&0xFFC0)==0xF8C0`
+  mask + Rn/Rt!=15 guards; body verbatim for word/unsigned): native
+  per-op micro-benchmark (temp, removed) ldr.w −61% / str.w −46% —
+  the legacy F800 path is long (class match + addressing + literal/PLD
+  checks) vs 3 compares + direct body. Differential suite (512
+  pair-cases + exclusion rows) + full gates green.
 - fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
   STR skipping the table load): native per-op micro-benchmark -2–20%
   (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly

@@ -1687,3 +1687,34 @@ fn hoist_bccw_matches_legacy() {
     assert!(taken > 10 && untaken > 10);
     assert!(n == 128);
 }
+
+#[test]
+fn hoist_f8word_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    // T2-imm12 word loads (c=13) and stores (c=12), Rn/Rt across low regs
+    // + SP, small/large offsets. Overlapping Rt/Rn included (sequential
+    // order preserved exactly).
+    for &c in &[0xCu16, 0xDu16] {
+        for rn in 0..8usize {
+            for rt in 0..8usize {
+                for &imm12 in &[0u16, 1, 0x100, 0xFFF] {
+                    let op1 = 0xF800u16 | (c << 4) | ((rn as u16) & 7);
+                    let op2 = (((rt as u16) & 15) << 12) | (imm12 & 0xFFF);
+                    check_pair(sys, op1, op2, &[scratch(rn)], 0, 0xB000 + (n & 0xFFFF), "f8word");
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert!(n == 512);
+    // Exclusion rows (literal/Rn==15, Rt==15 PLD/branch/fault paths take
+    // the legacy arms in both modes).
+    for &o1 in &[0xF8CFu16, 0xF8DF] {
+        check_pair(sys, o1, 0x0000, &[scratch(7)], 0, 0xB100, "f8word-rn15");
+        check_pair(sys, 0xF8C0 | 0x0007, 0xF000, &[scratch(7)], 0, 0xB101, "f8word-rt15");
+    }
+}
+

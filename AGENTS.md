@@ -815,6 +815,12 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   enumerated `is_f300_hit` disjunction, not memory). In-binary A/B:
   dfu +9.2%, showcase +10.3%, coremark +1.9%, periph 1.000. 3 new
   differential suites + full gates green.
+- **F8 T2-imm12 word hoist** (ldr.w/str.w, single-mask guard): the other
+  dfu-rotation family behind the F800 class/addressing maze. Native
+  per-op micro-benchmark (temp, removed): ldr.w −61%, str.w −46% —
+  the legacy path is long (class match + addressing + literal/PLD/rt
+  checks) vs 3 compares + direct body. Differential suite (512
+  pair-cases + rn==15/rt==15 exclusion rows) + full gates green.
 - **Scaffold batch** (NVIC pending-mirror + 6× force-inline + dead
   `cycles` deletion + bank-sync removal): in-binary A/B vs table
   baseline — oled +4.5%, showcase +9%, coremark +11.5%, dfu +14.4%,
