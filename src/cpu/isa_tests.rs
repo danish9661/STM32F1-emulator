@@ -1625,3 +1625,65 @@ fn hoist_popw_matches_legacy() {
     assert!(n == 192);
 }
 
+
+// ---- 32-bit branch hoists: BL / B.W / Bcc.W vs legacy path ----
+// run_pair_both carries 32-bit halves directly. Taken branches land in
+// the snippet's own b-self pads (spinning convergently); Bcc.W cc==0xF
+// faults identically on both paths. No 16-bit fusion can fire on these
+// shapes (32-bit firsts never fuse; trailing (B,B) pairs never fuse).
+
+#[test]
+fn hoist_bl_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    // off 0 (-> pc+4 b-self) and off 2 (-> pc+6 b-self); S=0/imm10=0 only
+    // (other first-halves jump out of the snippet into pattern, which
+    // can't converge under fixed steps — same rationale as the BX rows).
+    for &o2 in &[0xF800u16, 0xF801] {
+        for s in 0..8 {
+            check_pair(sys, 0xF000, o2, &[], 0, 0xA000 + (n & 0xFFFF) + s, "bl");
+            n += 1;
+        }
+    }
+    assert!(n == 16);
+}
+
+#[test]
+fn hoist_bw_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0;
+    for &o2 in &[0xB800u16, 0xB801] {
+        for s in 0..8 {
+            check_pair(sys, 0xF000, o2, &[], 0, 0xA100 + (n & 0xFFFF) + s, "bw");
+            n += 1;
+        }
+    }
+    assert!(n == 16);
+}
+
+#[test]
+fn hoist_bccw_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for cc in 0..16 {
+        for &o2 in &[0xA800u16, 0xA801] {
+            for &flags in &[0u32, 0xF0000000, 0x20000000, 0x80000000] {
+                let op1 = 0xF000 | ((cc as u16) << 6);
+                let (a, b) = run_pair_both(sys, op1, o2, &[], flags, 0xA200 + n);
+                assert!(snap_eq(&a, &b), "fused/legacy diverge for bccw cc={}", cc);
+                if (a.regs[15] & !1) == 0x20002004 { untaken += 1; } else { taken += 1; }
+                n += 1;
+            }
+        }
+    }
+    assert!(taken > 10 && untaken > 10);
+    assert!(n == 128);
+}

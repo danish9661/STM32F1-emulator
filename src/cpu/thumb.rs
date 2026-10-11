@@ -545,6 +545,24 @@ fn is_bx_shape(o2: u32) -> bool {
     (o2 & 0xFC00) == 0x4400 && ((o2 >> 8) & 3) == 3
 }
 
+/// F300-block hit shapes that share the F000-entry mask range with BccW-shaped
+/// o2 (o2hi == 0x8): NOP.W, DBG, barriers/CLREX, MRS, MSR. Legacy serves
+/// them from the earlier F300 block; every other (F*, 0x8xxx) shape falls
+/// through to the F000 Bcc.W path (the F300 block's remaining arms all
+/// need o2 < 0x8000 — verified by enumerating the block, not by memory).
+/// The H-BCCW hoist must exclude exactly this disjunction: missing any arm
+/// derails firmware on real code (dfu executes nop.w padding constantly).
+/// Found via native firmware runs, never via the differential — a
+/// symmetric mis-dispatch agrees with itself, so only reality (probes +
+/// firmware runs) guards exclusions; differentials guard bodies.
+#[inline(always)]
+fn is_f300_hit(o1: u32, o2: u32) -> bool {
+    (o1 == 0xF3AF && (o2 == 0x8000 || o2 == 0x80F0))
+        || (o1 == 0xF3BF && (o2 & 0xFF00) == 0x8F00)
+        || ((o1 & 0xFFF0) == 0xF3E0 && (o2 & 0xF000) == 0x8000)
+        || ((o1 & 0xFFF0) == 0xF380 && (o2 & 0xF000) == 0x8000)
+}
+
 fn fused_tail_himov(cpu: &mut Cpu, _sys: &WasmSystem, _mem: &mut FlatMemory, o2: u32, pc: u32) -> u32 {
     if let Some(stops) = fused_interlock(cpu, pc) {
         return stops;
@@ -2175,6 +2193,62 @@ fn ldm_stm_body(
     return 1;
 }
 
+/// Shared B.W target computation (pure): S/J1/J2/imm10/imm11 bit-twiddle
+/// verbatim from the exec32 branch decoder. Used by the legacy B.W arm and
+/// the B.W hoist below — one implementation, no drift.
+fn bw_off(o1: u32, o2: u32) -> u32 {
+    let s = (o1 >> 10) & 1;
+    let imm10 = o1 & 0x3FF;
+    let imm11 = o2 & 0x7FF;
+    let j1 = (o2 >> 13) & 1;
+    let j2 = (o2 >> 11) & 1;
+    let i1 = j1 ^ s ^ 1;
+    let i2 = j2 ^ s ^ 1;
+    sx((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1), 25)
+}
+
+/// Shared Bcc.W body (cond in o1[9:6], J1=o2[11]/J2=o2[13] direct, cc==0xF
+/// faults). Extracted verbatim so the hoist and the legacy arm execute
+/// literally the same code.
+fn bccw_body(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32, op1: u16, op2: u16,
+) -> u32 {
+    let s = (o1 >> 10) & 1;
+    let imm11 = o2 & 0x7FF;
+    let cc = (o1 >> 6) & 0xF;
+    if cc == 0xF {
+        return fault(cpu, pc, op1, op2, 4);
+    }
+    let imm6 = o1 & 0x3F;
+    let j1 = (o2 >> 11) & 1;
+    let j2 = (o2 >> 13) & 1;
+    let off = sx(
+        (s << 20) | (j1 << 19) | (j2 << 18) | (imm6 << 12) | (imm11 << 1),
+        21,
+    );
+    if cc == 0xE || cond_ok(cpu, cc) {
+        return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
+    }
+    adv(cpu, pc, 4);
+    1
+}
+
+/// Shared BL body: LR = return address, then interworking branch.
+fn bl_body(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, pc: u32, op1: u16, op2: u16,
+) -> u32 {
+    let s = (o1 >> 10) & 1;
+    let imm10 = o1 & 0x3FF;
+    let imm11 = o2 & 0x7FF;
+    let j1 = (o2 >> 13) & 1;
+    let j2 = (o2 >> 11) & 1;
+    let i1 = j1 ^ s ^ 1;
+    let i2 = j2 ^ s ^ 1;
+    let off = sx((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1), 25);
+    cpu.regs.r[14] = (pc + 4) | 1;
+    branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4)
+}
+
 pub fn exec32(
     cpu: &mut Cpu,
     sys: &WasmSystem,
@@ -2191,6 +2265,25 @@ pub fn exec32(
     if !it_ok(cpu) {
             adv(cpu, pc, 4);
             return 1;
+        }
+        // Hot 32-bit hoists (dynamic census): BL (13-24% of every
+        // workload's 32-bit stream), B.W, Bcc.W. Each guard is provably
+        // inside the legacy path (F300/USAT block needs F3xx firsts;
+        // MRS/MSR need F3E0/F380; the o2<0x8000 subtree needs o2[15]==0;
+        // the branch/BL groups split o2[15:14] 10/11 disjointly) and the
+        // shared bodies execute — hoist_live() gates for the differential
+        // suites, checked last.
+        if (o1 & 0xF800) == 0xF000 && (o2 & 0xC000) == 0xC000 && (o2 & 0xF000) == 0xF000 && hoist_live() {
+            return bl_body(cpu, sys, mem, o1, o2, pc, op1, op2);
+        }
+        if (o1 & 0xF800) == 0xF000 && (o2 & 0xC000) == 0x8000 && (o2 & 0x1000) != 0 && hoist_live() {
+            let off = bw_off(o1, o2);
+            return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
+        }
+        // Hoist Bcc.W (exclusions: is_f300_hit — see its contract).
+        if (o1 & 0xF800) == 0xF000 && (o2 & 0xC000) == 0x8000 && (o2 & 0x1000) == 0
+            && !is_f300_hit(o1, o2) && hoist_live() {
+            return bccw_body(cpu, sys, mem, o1, o2, pc, op1, op2);
         }
         // Hot 32-bit hoists (dfu main-loop rotation, dynamic census):
         // push.w (E92D/41xx) and pop.w-pc (E8BD/81xx) each retire ~1.25M
@@ -2472,16 +2565,9 @@ pub fn exec32(
     if o1 & 0xF800 == 0xF000 {
         // branches (op2[15:14] == 10)
         if o2 & 0xC000 == 0x8000 {
-            let s = (o1 >> 10) & 1;
-            let imm10 = o1 & 0x3FF;
-            let imm11 = o2 & 0x7FF;
-            let j1 = (o2 >> 13) & 1;
-            let j2 = (o2 >> 11) & 1;
-            let i1 = j1 ^ s ^ 1;
-            let i2 = j2 ^ s ^ 1;
-            let off = sx((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1), 25);
             if o2 & 0x1000 != 0 {
-                // B.W unconditional
+                // B.W unconditional (target via the shared helper).
+                let off = bw_off(o1, o2);
                 return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
             }
             // Bcc.W: cond in op1[9:6]. 21-bit offset S:J1:J2:imm6:imm11:0
@@ -2493,36 +2579,12 @@ pub fn exec32(
             // 0x80013d2. (A "B.W-style inversion fix" here broke firmware
             // boot: for S=0 it differs from direct exactly when J is set,
             // i.e. on every real forward wide conditional.)
-            let cc = (o1 >> 6) & 0xF;
-            if cc == 0xF {
-                return fault(cpu, pc, op1, op2, 4);
-            }
-            let imm6 = o1 & 0x3F;
-            let j1 = (o2 >> 11) & 1;
-            let j2 = (o2 >> 13) & 1;
-            let off = sx(
-                (s << 20) | (j1 << 19) | (j2 << 18) | (imm6 << 12) | (imm11 << 1),
-                21,
-            );
-            if cc == 0xE || cond_ok(cpu, cc) {
-                return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
-            }
-            adv(cpu, pc, 4);
-            return 1;
+            return bccw_body(cpu, sys, mem, o1, o2, pc, op1, op2);
         }
         // BL (Fxxx) / BLX-imm (Exxx, ARM state: impossible on Cortex-M)
         if o2 & 0xC000 == 0xC000 {
             if o2 & 0xF000 == 0xF000 {
-                let s = (o1 >> 10) & 1;
-                let imm10 = o1 & 0x3FF;
-                let imm11 = o2 & 0x7FF;
-                let j1 = (o2 >> 13) & 1;
-                let j2 = (o2 >> 11) & 1;
-                let i1 = j1 ^ s ^ 1;
-                let i2 = j2 ^ s ^ 1;
-                let off = sx((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1), 25);
-                cpu.regs.r[14] = (pc + 4) | 1;
-                return branch(cpu, sys, mem, pc.wrapping_add(4).wrapping_add(off) | 1, pc, op1, op2, 4);
+                return bl_body(cpu, sys, mem, o1, o2, pc, op1, op2);
             }
             // BLX-imm (Exxx) targets ARM state, Cxxx/Dxxx unallocated here.
             return fault(cpu, pc, op1, op2, 4);

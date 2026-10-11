@@ -173,6 +173,19 @@ All notable changes to this project will be documented in this file.
   shows ≤0. (Whole-loop fusion was rejected first: the "10-op loop" is
   leaf helpers with internal exits + 32-bit RMW + calls — trace-JIT
   territory.)
+- 32-bit branch hoists (BL/B.W/Bcc.W, shared bodies): a dynamic 32-bit
+  census across all workloads showed BL at 13–24% of every 32-bit
+  stream plus B.W/Bcc.W shapes — all sitting behind exec32's nested
+  descent. Two guard-precision bugs, both found by firmware runs (the
+  differential agrees with any symmetric mis-dispatch, so it cannot
+  guard exclusions): first MRS/MSR shapes, then NOP.W/DBG/barrier
+  shapes — both hide inside the F000-entry mask range while served by
+  the earlier F300 block. Fixed via an enumerated `is_f300_hit`
+  disjunction (all five F300 arms with o2hi==0x8, verified by listing
+  the block, not memory). Proof: 3 differential suites (convergent
+  landings + cc==0xF fault rows + EXC/even BX-style rows for BL) +
+  mrs probes (the exclusion proof) + full gates green. In-binary A/B:
+  dfu +9.2%, showcase +10.3%, coremark +1.9%, periph 1.000.
 - fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
   STR skipping the table load): native per-op micro-benchmark -2–20%
   (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly

@@ -805,6 +805,16 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   shared `ldm_stm_body` + exact-shape hoists. Native per-op +7–8%;
   wasm firmware-level below box resolution — kept on per-op proof +
   safety with revert trigger. lib 123/123, all gates green.
+- **32-bit branch hoists** (BL/B.W/Bcc.W via shared `bw_off`/`bccw_body`/
+  `bl_body` — dfu/oled/showcase execute 13–24% BL and B.W/Bcc.W shapes
+  from a dynamic 32-bit census): two guard-precision bugs found by
+  firmware runs, never by differentials (symmetric mis-dispatch agrees
+  with itself — only reality guards exclusions): MRS/MSR shapes, then
+  NOP.W/DBG/barrier shapes, both hiding inside the F000-entry mask
+  range and served by the earlier F300 block (excluded via an
+  enumerated `is_f300_hit` disjunction, not memory). In-binary A/B:
+  dfu +9.2%, showcase +10.3%, coremark +1.9%, periph 1.000. 3 new
+  differential suites + full gates green.
 - **Scaffold batch** (NVIC pending-mirror + 6× force-inline + dead
   `cycles` deletion + bank-sync removal): in-binary A/B vs table
   baseline — oled +4.5%, showcase +9%, coremark +11.5%, dfu +14.4%,
