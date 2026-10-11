@@ -483,6 +483,44 @@ impl FlatMemory {
         }
         None
     }
+    /// Third-halfword fetch for triple templates (T1/T2): replicates the
+    /// fetch32 containment discipline for pc+4 (single non-peripheral
+    /// region, else 0 — and 0 matches no triple-second shape). Never
+    /// speculative in practice (a reached pair with a non-branching
+    /// second always fetches pc+4 next), but the gate keeps region edges
+    /// and peripheral windows exact. Outlined like fetch32_raw: run() is
+    /// already huge.
+    #[inline(never)]
+    pub(crate) fn fetch_third(&self, pc: u32) -> u16 {
+        let a = pc.wrapping_add(4);
+        if is_periph(a) {
+            return 0;
+        }
+        if self.in_flash(a) {
+            let o = (a - self.flash_base) as usize;
+            if o + 1 < self.flash.len() {
+                return (unsafe { *self.flash.get_unchecked(o) as u16 })
+                    | ((unsafe { *self.flash.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return 0;
+        } else if self.in_ram(a) {
+            let o = (a - self.ram_base) as usize;
+            if o + 1 < self.ram.len() {
+                return (unsafe { *self.ram.get_unchecked(o) as u16 })
+                    | ((unsafe { *self.ram.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return 0;
+        } else if let Some(idx) = self.extra_idx(a) {
+            let r = &self.extra[idx];
+            let o = (a - r.base) as usize;
+            if o + 1 < r.data.len() {
+                return (unsafe { *r.data.get_unchecked(o) as u16 })
+                    | ((unsafe { *r.data.get_unchecked(o + 1) as u16 }) << 8);
+            }
+            return 0;
+        }
+        0
+    }
     #[inline(always)]
     fn read8_raw_unchecked(&self, addr: u32) -> u8 {
         // Containment is proven by in_flash/in_ram/extra_idx before each

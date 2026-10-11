@@ -195,6 +195,13 @@ All notable changes to this project will be documented in this file.
   (same wasm, on vs off): **dfu +38.7%**, rest exactly 1.000 — the
   flat rows are fused-handler-owned streams (bulk fires only where
   fusion can't reach: T3 multiples + unfused 16-bit = dfu's mix).
+- Triples T1/T2 ((PUSH,LDRlit,CBZ) + (LDRlit,CBZ,LDRlit) via contained
+  `fetch_third`): dfu's two CBZ sites retire 3 ops per dispatch (exact
+  3/3 and 2/3 counts via `fused_interlock_at`); T3/T4 interiors proven
+  cold and skipped. 2 differential suites (~10K cases, both directions;
+  firing proven by surgical break-tests) + full gates green. Native
+  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131; wasm A/B
+  queued for quiet (revert trigger documented).
 - Bulk multi-transfer fast paths (push.w/pop.w T3 + PUSH/POP T1): one
   `ram_range_ok` contiguous-RAM proof + one MPU/watch gate replaces all
   per-word gates; words move raw (`get_unchecked`, same containment
@@ -204,6 +211,13 @@ All notable changes to this project will be documented in this file.
   pop.w −35%, PUSH −70%, POP −73%. Differential: T3 cubes ride the
   hoist suites; new 16-bit cubes place SP inside the hashed window.
   lib 129/129 + full gates green. Kept on per-op proof + safety.
+- Triples T1/T2 ((PUSH,LDRlit,CBZ) + (LDRlit,CBZ,LDRlit) via contained
+  `fetch_third`): dfu's two CBZ sites retire 3 ops per dispatch (exact
+  3/3 and 2/3 counts via `fused_interlock_at`); T3/T4 interiors proven
+  cold and skipped. 2 differential suites (~10K cases, both directions;
+  firing proven by surgical break-tests) + full gates green. Native
+  per-op (temp, removed): T1 −40%, T2 −37%. lib 131/131; wasm A/B
+  queued for quiet (revert trigger documented).
 - fast_tag second wave (7 more hot first-ops: LSL/MOV/B/CBZ/PUSH/POP/
   STR skipping the table load): native per-op micro-benchmark -2–20%
   (LSL -20%, CBZ -16%, MOV -12%, B -10%, controls lit/bcc exactly

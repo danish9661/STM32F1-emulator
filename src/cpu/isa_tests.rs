@@ -1776,3 +1776,119 @@ fn bulk_pop16_matches_legacy() {
     assert!(n == 112);
 }
 
+
+// ---- Triple differential (T1/T2): three-op retirement vs legacy ------
+// Taken branches land in the snippet's b-self pads (spinning
+// convergently); untaken paths fall through to pads. CBZ nz selects the
+// taken landing (0 -> same pad as fallthrough+advance, 2 -> next pad)
+// so both directions are distinguishable and asserted.
+
+fn op_cbz_nz(rn: usize, cbnz: bool, imm5: u32, hi: u32) -> u16 {
+    0xB100 | ((rn & 7) as u16) | if cbnz { 0x800 } else { 0 } | (((imm5 & 31) as u16) << 3) | (((hi & 1) as u16) << 9)
+}
+
+/// Three-op version of run_pair_both for triple templates: runs
+/// [op1,op2,op3,b,b,pads] both modes (fused vs legacy) with SP inside the
+/// hashed window and CBZ/CBNZ target regs driven explicitly. Returns both
+/// snapshots; taken/untaken accounting is the caller's job.
+fn run_triple_both(
+    sys: &crate::system::WasmSystem,
+    op1: u16,
+    op2: u16,
+    op3: u16,
+    regs: &[(usize, u32)],
+    flags: u32,
+    seed: u32,
+) -> (Snap, Snap) {
+    let mut out = Vec::new();
+    for fused in [true, false] {
+        super::thumb::fusion_off(!fused);
+        let mut cpu = Cpu::new(0x20008000, 0x20002001);
+        cpu.dsp = false;
+        cpu.deliver_irqs = false;
+        let mut mem = FlatMemory::new(0x1000, 0x10000);
+        let mut code = vec![op1, op2, op3, 0xE7FE, 0xE7FE];
+        let mut s = seed;
+        for _ in 0..10 {
+            code.push((xorshift(&mut s) & 0xFFFF) as u16);
+        }
+        for (i, w) in code.iter().enumerate() {
+            mem.write16(0x20002000 + (i as u32) * 2, *w);
+        }
+        for r in 0..8 {
+            cpu.regs.r[r] = xorshift(&mut s);
+        }
+        for r in 8..13 {
+            cpu.regs.r[r] = 0xAA000000 + (r as u32);
+        }
+        cpu.regs.r[13] = 0x200030C0;
+        cpu.regs.r[14] = 0xDEADBEEF;
+        for &(r, v) in regs {
+            cpu.regs.r[r] = v;
+        }
+        cpu.regs.xpsr = (cpu.regs.xpsr & !0xF0000000) | (flags & 0xF0000000);
+        s = seed ^ 0x9E3779B9;
+        for a in (0x20003000..0x20003100).step_by(2) {
+            mem.write16(a, (xorshift(&mut s) & 0xFFFF) as u16);
+        }
+        cpu.run(sys, &mut mem, 8);
+        out.push(snap_of(&cpu, &mem));
+    }
+    super::thumb::fusion_off(false);
+    (out.remove(0), out.remove(0))
+}
+
+#[test]
+fn triple_push_lit_cbz_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for &list in &[0x08u32, 0x38, 0x108, 0x1FF] {
+        for rt2 in 0..8 { for &imm8 in &[0u32, 3] {
+            for rn3 in 0..8 { for cbnz in [false, true] {
+                for &rv in &[0u32, 5] {
+                    let (a, b) = run_triple_both(sys, op_push(list), op_lit(rt2, imm8),
+                        op_cbz_nz(rn3, cbnz, 0, 0), &[(rn3, rv)], 0, 0xD000 + n);
+                    assert!(snap_eq(&a, &b), "triple diverges: list={:03x} rt2={} rn3={}", list, rt2, rn3);
+                    if (a.regs[15] & !1) == 0x20002008 { taken += 1; } else { untaken += 1; }
+                    n += 1;
+                }
+            } }
+        } }
+    }
+    assert!(taken > 10 && untaken > 10, "must exercise both CBZ directions");
+    assert!(n == 2048);
+}
+
+#[test]
+fn triple_lit_cbz_lit_matches_legacy() {
+    let _held = crate::test_util::lock();
+    crate::init();
+    let sys = crate::sys();
+    let mut n = 0u32;
+    let mut taken = 0;
+    let mut untaken = 0;
+    for rt1 in 0..8 { for &imm8 in &[0u32, 3] {
+        for rn2 in 0..8 { for cbnz in [false, true] {
+            for &rv in &[0u32, 5] {
+                for rt3 in 0..8 { for &imm8b in &[0u32, 3] {
+                    // nz=2 puts the taken landing one pad past fallthrough.
+                    let (a, b) = run_triple_both(sys, op_lit(rt1, imm8),
+                        op_cbz_nz(rn2, cbnz, 1, 0), op_lit(rt3, imm8b),
+                        &[(rn2, rv)], 0, 0xD100 + (n & 0xFFFF));
+                    assert!(snap_eq(&a, &b), "triple diverges: rt1={} rn2={} rt3={}", rt1, rn2, rt3);
+                    if (a.regs[15] & !1) == 0x20002008 { taken += 1; } else { untaken += 1; }
+                    n += 1;
+                } }
+            }
+        } }
+    } }
+    assert!(taken > 100 && untaken > 100, "must exercise both CBZ directions");
+    assert!(n == 8192);
+}
+
+
+

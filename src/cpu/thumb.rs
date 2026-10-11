@@ -334,6 +334,14 @@ fn is_bcc_shape(o2: u32) -> bool {
     (o2 & 0xF000) == 0xD000 && (o2 & 0xFF00) != 0xDF00 && (o2 & 0xFF00) != 0xDE00
 }
 
+/// CBZ/CBNZ-shape probe for fused branch-tails (T1/T2 triples): the CBZ
+/// range contains no traps (DF00/DE00 mask to 0xD1/0xD0, never 0xB1),
+/// so unlike Bcc no DF00/DE00 exclusion is needed.
+#[inline(always)]
+fn is_cbz_shape(o3: u32) -> bool {
+    (o3 & 0xF500) == 0xB100
+}
+
 /// Fused (LDRlit, LDR-imm): two loads, no flags either way. Bodies copied
 /// verbatim from the two arms (sequential order preserved, so overlapping
 /// Rt/Rn resolve like silicon); single pc+4 advance. Callers guarantee:
@@ -391,6 +399,118 @@ fn fused_bcc_tail(
     }
     adv(cpu, pc, 4);
     2
+}
+
+/// Mid-triple stop check (T1/T2): boundary = address of the op that may
+/// have just faulted (stays there, retires 0) or just completed into a
+/// halt (advances past it, retires retired+1); retired = ops fully done
+/// before the boundary (r15 still at the triple start). Generalizes
+/// fused_interlock (= boundary pc, retired 0); fused_branch_done stays
+/// untouched for pairs. Only op bodies that can fault/MPU-trip or
+/// observe halts need these (loads/stores); pure ALU/decide steps fall
+/// through to the next boundary.
+#[inline(always)]
+fn fused_interlock_at(cpu: &mut Cpu, pc: u32, boundary: u32, retired: u32) -> Option<u32> {
+    if cpu.fault.is_some() {
+        if boundary != pc {
+            adv(cpu, pc, boundary.wrapping_sub(pc));
+        }
+        return Some(0);
+    }
+    if cpu.sleeping || crate::system::debug_halted() {
+        adv(cpu, pc, boundary.wrapping_sub(pc).wrapping_add(2));
+        return Some(retired + 1);
+    }
+    None
+}
+
+/// Fused (PUSH, LDRlit, CBZ) triple (T1, dfu leaf-helper shape): push +
+/// literal load complete, then the CBZ decides — taken branches (all
+/// three retired), untaken falls through past all three. Counts match
+/// legacy exactly (3/3); CBZ targets are always odd non-EXC_RETURN, so
+/// the taken branch cannot fault (same argument as the B/CBZ tails).
+fn fused_push_lit_cbz(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, o3: u32, pc: u32,
+) -> u32 {
+    let list = o1 & 0xFF;
+    let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
+    let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
+    cpu.regs.r[13] = sp;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            mem.write32(sp, cpu.regs.r[i as usize]);
+            sp += 4;
+        }
+    }
+    if o1 & 0x100 != 0 {
+        mem.write32(sp, cpu.regs.r[14]);
+    }
+    if let Some(stops) = fused_interlock_at(cpu, pc, pc, 0) {
+        return stops;
+    }
+    let rt2 = ((o2 >> 8) & 7) as usize;
+    let pc2 = pc.wrapping_add(2);
+    let base2 = (pc2 + 4) & !3;
+    cpu.regs.r[rt2] = mem.read32(base2.wrapping_add((o2 & 0xFF) * 4));
+    if let Some(stops) = fused_interlock_at(cpu, pc, pc2, 1) {
+        return stops;
+    }
+    let pc3 = pc.wrapping_add(4);
+    let nz = ((o3 >> 3) & 0x1F) * 2 + ((o3 >> 9) & 1) * 64;
+    let rn3 = (o3 & 7) as usize;
+    let take = if o3 & 0x800 == 0 {
+        rr(cpu, rn3, pc3) == 0
+    } else {
+        rr(cpu, rn3, pc3) != 0
+    };
+    if take {
+        // Taken: all three retired; the target is always odd and never
+        // EXC_RETURN-shaped, so branch() cannot stop here (a defensive
+        // b==0 would still halt safely via the run-loop fault check).
+        branch(cpu, sys, mem, (pc3.wrapping_add(4).wrapping_add(nz)) | 1, pc3, o3 as u16, 0, 2);
+        return 3;
+    }
+    adv(cpu, pc, 6);
+    3
+}
+
+/// Fused (LDRlit, CBZ, LDRlit) triple (T2): literal load, CBZ decides —
+/// taken branches (two retired, third skipped), untaken executes the
+/// second literal (all three retired). Counts match legacy exactly
+/// (2 taken / 3 untaken); same no-fault argument as T1 for the branch.
+fn fused_lit_cbz_lit(
+    cpu: &mut Cpu, sys: &WasmSystem, mem: &mut FlatMemory, o1: u32, o2: u32, o3: u32, pc: u32,
+) -> u32 {
+    let rt1 = ((o1 >> 8) & 7) as usize;
+    let base1 = (pc + 4) & !3;
+    cpu.regs.r[rt1] = mem.read32(base1.wrapping_add((o1 & 0xFF) * 4));
+    if let Some(stops) = fused_interlock_at(cpu, pc, pc, 0) {
+        return stops;
+    }
+    let pc2 = pc.wrapping_add(2);
+    let nz = ((o2 >> 3) & 0x1F) * 2 + ((o2 >> 9) & 1) * 64;
+    let rn2 = (o2 & 7) as usize;
+    let take = if o2 & 0x800 == 0 {
+        rr(cpu, rn2, pc2) == 0
+    } else {
+        rr(cpu, rn2, pc2) != 0
+    };
+    if take {
+        branch(cpu, sys, mem, (pc2.wrapping_add(4).wrapping_add(nz)) | 1, pc2, o2 as u16, 0, 2);
+        return 2;
+    }
+    if let Some(stops) = fused_interlock_at(cpu, pc, pc2, 1) {
+        return stops;
+    }
+    let pc3 = pc.wrapping_add(4);
+    let rt3 = ((o3 >> 8) & 7) as usize;
+    let base3 = (pc3 + 4) & !3;
+    cpu.regs.r[rt3] = mem.read32(base3.wrapping_add((o3 & 0xFF) * 4));
+    if let Some(stops) = fused_interlock_at(cpu, pc, pc3, 2) {
+        return stops;
+    }
+    adv(cpu, pc, 6);
+    3
 }
 
 /// Fused (CMP-imm, Bcc). Callers guarantee it_n == 0 and both shapes.
@@ -1377,9 +1497,25 @@ pub fn exec16(
             if cpu.it_n == 0 && (q & 0xF800) == 0x6000 && fusion_live() {
                 return fused_lit_str(cpu, sys, mem, o, q, pc);
             }
+            // T2 triple (LDRlit, CBZ, LDRlit) subsumes the pair below:
+            // check first, fall back to the pair when o3 isn't LDRlit.
+            if cpu.it_n == 0 && (q & 0xF500) == 0xB100 {
+                let r = mem.fetch_third(pc);
+                if (r & 0xF800) == 0x4800 && fusion_live() {
+                    return fused_lit_cbz_lit(cpu, sys, mem, o, q, r as u32, pc);
+                }
+            }
             // v3 fusion: (LDRlit, CBZ/CBNZ) null-check after load (10% dfu).
             if cpu.it_n == 0 && (q & 0xF500) == 0xB100 && fusion_live() {
                 return fused_lit_cbz(cpu, sys, mem, o, q, pc);
+            }
+            // T2 triple (LDRlit, CBZ, LDRlit): literal, branch-or-second-
+            // literal. o3 from the contained fetch; sentinel matches nothing.
+            if cpu.it_n == 0 && (q & 0xF500) == 0xB100 {
+                let r = mem.fetch_third(pc);
+                if (r & 0xF800) == 0x4800 && fusion_live() {
+                    return fused_lit_cbz_lit(cpu, sys, mem, o, q, r as u32, pc);
+                }
             }
             let rt = ((o >> 8) & 7) as usize;
             let base = (pc + 4) & !3;
@@ -1618,6 +1754,15 @@ pub fn exec16(
         },
         // PUSH / POP
         ARM_PUSH => {
+            // T1 triple (PUSH, LDRlit, CBZ) subsumes the pair below: check
+            // first, fall back to pairs when the third halfword isn't CBZ.
+            // o3 comes from a contained fetch (sentinel 0 matches nothing).
+            if cpu.it_n == 0 && (q & 0xF800) == 0x4800 {
+                let r = mem.fetch_third(pc);
+                if is_cbz_shape(r as u32) && fusion_live() {
+                    return fused_push_lit_cbz(cpu, sys, mem, o, q, r as u32, pc);
+                }
+            }
             // v3 fusion: (PUSH, LDRlit) save-then-constant (dfu memcpy loop).
             // PUSH never branches, so the fallthrough is the only path.
             if cpu.it_n == 0 && (q & 0xF800) == 0x4800 && fusion_live() {

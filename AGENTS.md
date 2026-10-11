@@ -858,6 +858,15 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   quiet box): oled +6.4%, showcase +8.5%, coremark +3.5%, dfu +4.2%,
   periph +8.1% — all bands below 1.0. Native per-op agreed (-2–20%).
   Exhaustive 65K proof + all gates green.
+- **Triples T1/T2** ((PUSH,LDRlit,CBZ) + (LDRlit,CBZ,LDRlit) via a
+  contained `fetch_third` lookahead): dfu's two CBZ sites retire 3 ops
+  per dispatch with exact taken/untaken counts (3/3 and 2/3) via a
+  generalized `fused_interlock_at`. T3/T4 interiors proven cold (absent
+  from the dynamic top cells) and skipped. Proof: 2 differential suites
+  (~10K triple-cases, both CBZ directions asserted; firing proven by
+  surgical break-tests after catching a shadowed-pair miss and a
+  5-site `str.replace` wildcard). Native per-op (temp, removed): T1
+  −40%, T2 −37%. Full gates green; wasm firmware-level A/B queued.
 - Box-load discipline learned the hard way: single-shot MIPS on a shared
   box swings ±40% (esbuild + headless-Chrome co-tenants here); only
   back-to-back A/B ratios and `.filter`-free medians are trustworthy —
