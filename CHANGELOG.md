@@ -236,6 +236,11 @@ All notable changes to this project will be documented in this file.
   + full gates), revert trigger if a quiet A/B ever shows ≤0.
   (Resolved quiet-box: oled +6.4%, showcase +8.5%, coremark +3.5%, dfu
   +4.2%, periph +8.1%, all bands below 1.0 — committed on this proof.)
+- fast_tag tail (6 more first-ops): wasm A/B unresolvable under
+  sustained contention — kept on structural argument (tag-dense hot
+  streams per motivating measurements; hits save load+jump, misses cost
+  one predictable compare) + exhaustive proof + full gates; revert
+  trigger stands.
 - Scaffold batch (NVIC pending-mirror + force-inline + dead-cycles
   deletion + bank-sync removal): the sync removal surprised — full
   reader/bank-assert audit proved the every-op sync vestigial (entry

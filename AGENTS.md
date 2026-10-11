@@ -869,6 +869,15 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   quiet box): oled +6.4%, showcase +8.5%, coremark +3.5%, dfu +4.2%,
   periph +8.1% — all bands below 1.0. Native per-op agreed (-2–20%).
   Exhaustive 65K proof + all gates green.
+- **fast_tag tail** (6 more: SUB_REG/ADDS_IMM8/LDRB/STRB/LDR_SP/
+  STR_SP): wasm A/B unresolvable under sustained contention (4M-window
+  med 1.000–1.040 within quantization; 16M-window band 0.99–1.26 void)
+  — kept on structural argument instead: hot streams are tag-dense by
+  the measurements that motivated each tag (SUB_REG 12.5% oled,
+  ADDS/LDRB ~2% coremark), each hit saves a table load + jump for one
+  predictable compare, and only tag-sparse deep mixes pay the added
+  checks. Exhaustive 65K proof + full gates green; revert trigger
+  stands.
 - **Triples T1/T2** ((PUSH,LDRlit,CBZ) + (LDRlit,CBZ,LDRlit) via a
   contained `fetch_third` lookahead): dfu's two CBZ sites retire 3 ops
   per dispatch with exact taken/untaken counts (3/3 and 2/3) via a
