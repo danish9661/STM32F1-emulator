@@ -1444,6 +1444,24 @@ pub(crate) fn fast_tag(o: u32) -> Option<u8> {
         Some(ARM_POP)
     } else if o & 0xF800 == 0x6000  {
         Some(ARM_STR)
+    } else if o & 0xFE00 == 0x1A00 {
+        // SUBS-reg (v1 pair first; 12.5% oled/showcase with CMP-reg).
+        Some(ARM_SUB_REG)
+    } else if o & 0xF800 == 0x3000 {
+        // ADDS-imm8 (2.1% coremark into CBZ + disassembly presence).
+        Some(ARM_ADDS_IMM8)
+    } else if o & 0xF800 == 0x7800 {
+        // LDRB (2.1% coremark into HI-MOV).
+        Some(ARM_LDRB)
+    } else if o & 0xF800 == 0x7000 {
+        // STRB (dfu leaf-helper stores).
+        Some(ARM_STRB)
+    } else if o & 0xF800 == 0x9800 {
+        // LDR-sp (v4 static spill/fill + HAL spill plausibility).
+        Some(ARM_LDR_SP)
+    } else if o & 0xF800 == 0x9000 {
+        // STR-sp (v4 static spill/fill).
+        Some(ARM_STR_SP)
     } else {
         None
     }
