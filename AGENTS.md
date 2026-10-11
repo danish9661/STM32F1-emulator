@@ -833,6 +833,10 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   confirms the FreeRTOS wedge stays fixed — it was vestigial overhead
   (2 branches + store per op). Kept: strictly non-negative (periph
   exactly flat across 21 reps).
+- **IRQ throttle REVERTED**: polling every 8th op measured −14% on dfu
+  (tight band 1.128–1.141 — code-shape perturbation of the hot loop
+  swamps the saved borrow). Same-day rule applied; tree restored
+  byte-identical (rebuilt md5 matches pre-throttle baseline).
 - **fast_tag second wave**: 7 more hot first-ops (LSL/MOV/B/CBZ/PUSH/
   POP/STR) skipping the table load. In-binary A/B vs 5-tag (11 reps,
   quiet box): oled +6.4%, showcase +8.5%, coremark +3.5%, dfu +4.2%,
