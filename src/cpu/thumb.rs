@@ -342,6 +342,57 @@ fn is_cbz_shape(o3: u32) -> bool {
     (o3 & 0xF500) == 0xB100
 }
 
+/// Raw multi-store for fused PUSH first-bodies (bulk path): identical
+/// order and values to the legacy per-word loop (r0-r7 in list order,
+/// then LR); caller guarantees bulk_ok() (contiguous RAM, MPU off, no
+/// watch). Read-only regs + raw RAM writes, no branches on data.
+fn push_bulk(cpu: &Cpu, mem: &mut FlatMemory, sp: u32, list: u32, lr: bool) {
+    let mut wo = (sp - mem.ram_base) as usize;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            let b = cpu.regs.r[i as usize].to_le_bytes();
+            unsafe {
+                *mem.ram.get_unchecked_mut(wo) = b[0];
+                *mem.ram.get_unchecked_mut(wo + 1) = b[1];
+                *mem.ram.get_unchecked_mut(wo + 2) = b[2];
+                *mem.ram.get_unchecked_mut(wo + 3) = b[3];
+            }
+            wo += 4;
+        }
+    }
+    if lr {
+        let b = cpu.regs.r[14].to_le_bytes();
+        unsafe {
+            *mem.ram.get_unchecked_mut(wo) = b[0];
+            *mem.ram.get_unchecked_mut(wo + 1) = b[1];
+            *mem.ram.get_unchecked_mut(wo + 2) = b[2];
+            *mem.ram.get_unchecked_mut(wo + 3) = b[3];
+        }
+    }
+}
+
+/// Raw multi-load for fused POP first-bodies (bulk path): identical order
+/// and writeback to the legacy loop. Callers guarantee R == 0 (no return
+/// branch — guarded at the template). Returns the advanced SP.
+fn pop_bulk(cpu: &mut Cpu, mem: &mut FlatMemory, sp: u32, list: u32) -> u32 {
+    let mut wo = (sp - mem.ram_base) as usize;
+    let mut a = sp;
+    for i in 0..8 {
+        if (list >> i) & 1 == 1 {
+            let v = u32::from_le_bytes([
+                unsafe { *mem.ram.get_unchecked(wo) },
+                unsafe { *mem.ram.get_unchecked(wo + 1) },
+                unsafe { *mem.ram.get_unchecked(wo + 2) },
+                unsafe { *mem.ram.get_unchecked(wo + 3) },
+            ]);
+            cpu.regs.r[i as usize] = v;
+            wo += 4;
+            a = a.wrapping_add(4);
+        }
+    }
+    a
+}
+
 /// Fused (LDRlit, LDR-imm): two loads, no flags either way. Bodies copied
 /// verbatim from the two arms (sequential order preserved, so overlapping
 /// Rt/Rn resolve like silicon); single pc+4 advance. Callers guarantee:
@@ -436,14 +487,18 @@ fn fused_push_lit_cbz(
     let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
     let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
     cpu.regs.r[13] = sp;
-    for i in 0..8 {
-        if (list >> i) & 1 == 1 {
-            mem.write32(sp, cpu.regs.r[i as usize]);
-            sp += 4;
+    if bulk_ok(mem, sp, nl) {
+        push_bulk(cpu, mem, sp, list, o1 & 0x100 != 0);
+    } else {
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                mem.write32(sp, cpu.regs.r[i as usize]);
+                sp += 4;
+            }
         }
-    }
-    if o1 & 0x100 != 0 {
-        mem.write32(sp, cpu.regs.r[14]);
+        if o1 & 0x100 != 0 {
+            mem.write32(sp, cpu.regs.r[14]);
+        }
     }
     if let Some(stops) = fused_interlock_at(cpu, pc, pc, 0) {
         return stops;
@@ -936,14 +991,18 @@ fn fused_push_himov(
     let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
     let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
     cpu.regs.r[13] = sp;
-    for i in 0..8 {
-        if (list >> i) & 1 == 1 {
-            mem.write32(sp, cpu.regs.r[i as usize]);
-            sp += 4;
+    if bulk_ok(mem, sp, nl) {
+        push_bulk(cpu, mem, sp, list, o1 & 0x100 != 0);
+    } else {
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                mem.write32(sp, cpu.regs.r[i as usize]);
+                sp += 4;
+            }
         }
-    }
-    if o1 & 0x100 != 0 {
-        mem.write32(sp, cpu.regs.r[14]);
+        if o1 & 0x100 != 0 {
+            mem.write32(sp, cpu.regs.r[14]);
+        }
     }
     fused_tail_himov(cpu, sys, mem, o2, pc)
 }
@@ -956,14 +1015,18 @@ fn fused_push_ldri(
     let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
     let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
     cpu.regs.r[13] = sp;
-    for i in 0..8 {
-        if (list >> i) & 1 == 1 {
-            mem.write32(sp, cpu.regs.r[i as usize]);
-            sp += 4;
+    if bulk_ok(mem, sp, nl) {
+        push_bulk(cpu, mem, sp, list, o1 & 0x100 != 0);
+    } else {
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                mem.write32(sp, cpu.regs.r[i as usize]);
+                sp += 4;
+            }
         }
-    }
-    if o1 & 0x100 != 0 {
-        mem.write32(sp, cpu.regs.r[14]);
+        if o1 & 0x100 != 0 {
+            mem.write32(sp, cpu.regs.r[14]);
+        }
     }
     fused_tail_ldri(cpu, sys, mem, o2, pc)
 }
@@ -1028,14 +1091,20 @@ fn fused_push_lit(
     let nl = list.count_ones() + if o1 & 0x100 != 0 { 1 } else { 0 };
     let mut sp = cpu.regs.r[13].wrapping_sub(nl * 4);
     cpu.regs.r[13] = sp;
-    for i in 0..8 {
-        if (list >> i) & 1 == 1 {
-            mem.write32(sp, cpu.regs.r[i as usize]);
-            sp += 4;
+    // Bulk stores when eligible (same gating as ldm_stm_body); the legacy
+    // loop below stays byte-intact as fallback.
+    if bulk_ok(mem, sp, nl) {
+        push_bulk(cpu, mem, sp, list, o1 & 0x100 != 0);
+    } else {
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                mem.write32(sp, cpu.regs.r[i as usize]);
+                sp += 4;
+            }
         }
-    }
-    if o1 & 0x100 != 0 {
-        mem.write32(sp, cpu.regs.r[14]);
+        if o1 & 0x100 != 0 {
+            mem.write32(sp, cpu.regs.r[14]);
+        }
     }
     fused_tail_lit(cpu, sys, mem, o2, pc)
 }
@@ -1047,10 +1116,16 @@ fn fused_pop_lsl(
 ) -> u32 {
     let list = o1 & 0xFF;
     let mut sp = cpu.regs.r[13];
-    for i in 0..8 {
-        if (list >> i) & 1 == 1 {
-            cpu.regs.r[i as usize] = mem.read32(sp);
-            sp += 4;
+    // Bulk loads when eligible (guard proves R == 0, so no return
+    // branch can intervene); legacy loop stays byte-intact below.
+    if bulk_ok(mem, sp, list.count_ones()) {
+        sp = pop_bulk(cpu, mem, sp, list);
+    } else {
+        for i in 0..8 {
+            if (list >> i) & 1 == 1 {
+                cpu.regs.r[i as usize] = mem.read32(sp);
+                sp += 4;
+            }
         }
     }
     cpu.regs.r[13] = sp;

@@ -195,6 +195,10 @@ All notable changes to this project will be documented in this file.
   (same wasm, on vs off): **dfu +38.7%**, rest exactly 1.000 — the
   flat rows are fused-handler-owned streams (bulk fires only where
   fusion can't reach: T3 multiples + unfused 16-bit = dfu's mix).
+- Fused-bulk routing: fused PUSH/POP first-bodies (push_lit/himov/ldri,
+  push_lit_cbz, pop_lsl) call shared bulk helpers + legacy fallbacks
+  instead of per-word trait calls. Native per-op (temp, removed):
+  push-lit −12%, pop-lsl −41%. Existing suites cover.
 - Triples T1/T2 ((PUSH,LDRlit,CBZ) + (LDRlit,CBZ,LDRlit) via contained
   `fetch_third`): dfu's two CBZ sites retire 3 ops per dispatch (exact
   3/3 and 2/3 counts via `fused_interlock_at`); T3/T4 interiors proven

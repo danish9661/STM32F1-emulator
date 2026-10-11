@@ -855,6 +855,11 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   already own those streams' multi-transfers, so bulk fires only where
   fusion can't reach (T3 multiples + unfused 16-bit), which is exactly
   dfu's rotation mix.
+- **Fused-bulk routing**: fused PUSH/POP first-bodies now call the same
+  bulk paths (shared `push_bulk`/`pop_bulk` helpers + legacy fallbacks)
+  instead of per-word trait calls. Native per-op (temp, removed):
+  push-lit −12%, pop-lsl −41%. Existing suites cover (bulk toggles
+  with everything in run_pair_both).
 - **IRQ throttle REVERTED**: polling every 8th op measured −14% on dfu
   (tight band 1.128–1.141 — code-shape perturbation of the hot loop
   swamps the saved borrow). Same-day rule applied; tree restored
