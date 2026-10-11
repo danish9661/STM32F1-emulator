@@ -843,7 +843,12 @@ arm-none-eabi-objdump -d tests/arduino_periph_test/build/arduino_periph_test.ino
   −55%, pop.w −35%, PUSH −70%, POP −73%. Differential suites
   (T3 cubes ride the hoist suites; new 16-bit cubes with SP inside the
   hashed window so stored words compare) + full gates green. Kept on
-  per-op proof + safety with revert trigger. lib 129/129.
+  per-op proof + safety with revert trigger. lib 129/129. In-binary
+  A/B (same wasm, on vs off): **dfu +38.7%**, oled/showcase/coremark/
+  periph exactly 1.000 — expected, not a failure: fused pair handlers
+  already own those streams' multi-transfers, so bulk fires only where
+  fusion can't reach (T3 multiples + unfused 16-bit), which is exactly
+  dfu's rotation mix.
 - **IRQ throttle REVERTED**: polling every 8th op measured −14% on dfu
   (tight band 1.128–1.141 — code-shape perturbation of the hot loop
   swamps the saved borrow). Same-day rule applied; tree restored

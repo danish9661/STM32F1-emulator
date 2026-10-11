@@ -191,7 +191,10 @@ All notable changes to this project will be documented in this file.
   per-op micro-benchmark (temp, removed) ldr.w −61% / str.w −46% —
   the legacy F800 path is long (class match + addressing + literal/PLD
   checks) vs 3 compares + direct body. Differential suite (512
-  pair-cases + exclusion rows) + full gates green.
+  pair-cases + exclusion rows) + full gates green. In-binary A/B
+  (same wasm, on vs off): **dfu +38.7%**, rest exactly 1.000 — the
+  flat rows are fused-handler-owned streams (bulk fires only where
+  fusion can't reach: T3 multiples + unfused 16-bit = dfu's mix).
 - Bulk multi-transfer fast paths (push.w/pop.w T3 + PUSH/POP T1): one
   `ram_range_ok` contiguous-RAM proof + one MPU/watch gate replaces all
   per-word gates; words move raw (`get_unchecked`, same containment
